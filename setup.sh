@@ -194,25 +194,46 @@ else
 fi
 
 # =============================================================================
-# Claude Authentication (if not done earlier)
+# Claude Authentication
 # =============================================================================
-if [ -f "$SCRIPT_DIR/.env" ]; then
-    auth_mode=$(grep "^AUTH_MODE=" "$SCRIPT_DIR/.env" | cut -d'=' -f2)
-    if [ "$auth_mode" = "oauth" ]; then
-        # Check if already authenticated
-        if command -v claude &>/dev/null; then
-            if ! claude auth status &>/dev/null 2>&1; then
+echo ""
+auth_mode=$(grep "^AUTH_MODE=" "$SCRIPT_DIR/.env" 2>/dev/null | cut -d'=' -f2)
+if [ "$auth_mode" = "oauth" ]; then
+    log_info "OAuth mode is configured. Checking Claude authentication..."
+    if command -v claude &>/dev/null; then
+        # Check if session file exists (indicates previous login)
+        if [ -f "$HOME/.claude/.credentials.json" ]; then
+            log_success "Claude credentials found!"
+        else
+            echo ""
+            log_warning "Claude OAuth not configured yet."
+            read -p "Authenticate with Claude now? (Y/n): " do_auth
+            do_auth=${do_auth:-y}
+            if [[ "$do_auth" =~ ^[Yy]$ ]]; then
                 echo ""
-                read -p "Claude OAuth not configured. Authenticate now? (Y/n): " do_auth
-                do_auth=${do_auth:-y}
-                if [[ "$do_auth" =~ ^[Yy]$ ]]; then
-                    claude login || log_warning "Claude login failed."
-                fi
+                log_info "Running 'claude login'..."
+                claude login || log_warning "Claude login failed. Run 'claude login' manually."
             else
-                log_success "Claude authentication verified!"
+                echo ""
+                log_warning "Remember to run 'claude login' before starting CLOPUS."
             fi
         fi
+    else
+        log_warning "Claude Code CLI not found."
+        echo "  Install with: npm install -g @anthropic-ai/claude-code"
+        echo "  Then run: claude login"
     fi
+elif [ "$auth_mode" = "api" ]; then
+    log_info "API mode is configured."
+    api_key=$(grep "^ANTHROPIC_API_KEY=" "$SCRIPT_DIR/.env" 2>/dev/null | cut -d'=' -f2)
+    if [ -z "$api_key" ]; then
+        log_warning "No API key found in .env"
+        echo "  Add your Anthropic API key to .env: ANTHROPIC_API_KEY=sk-ant-..."
+    else
+        log_success "API key is configured!"
+    fi
+else
+    log_warning "No authentication mode configured in .env"
 fi
 
 # =============================================================================
