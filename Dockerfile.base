@@ -89,8 +89,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && ln -sf /usr/bin/python3.12 /usr/bin/python3 \
     && ln -sf /usr/bin/python3 /usr/bin/python
 
-# Upgrade pip
-RUN python3 -m pip install --upgrade pip setuptools wheel --break-system-packages
+# Upgrade pip (ignore system-installed packages)
+RUN python3 -m pip install --upgrade --ignore-installed pip setuptools wheel --break-system-packages
 
 # =============================================================================
 # Node.js 20 LTS
