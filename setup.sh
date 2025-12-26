@@ -86,28 +86,44 @@ else
     log_success "Created .env from template"
 
     echo ""
-    echo -e "${YELLOW}Please enter your configuration:${NC}"
+    echo -e "${YELLOW}Choose authentication method:${NC}"
     echo ""
-
-    # Anthropic API Key
-    read -p "Anthropic API Key (sk-ant-...): " api_key
-    if [ -n "$api_key" ]; then
-        sed -i "s|ANTHROPIC_API_KEY=.*|ANTHROPIC_API_KEY=$api_key|" "$SCRIPT_DIR/.env"
-    fi
-
-    # Auth mode
+    echo "  1) oauth   - Use Claude Max/Pro subscription (recommended, no API costs)"
+    echo "  2) api     - Use Anthropic API key (pay per use)"
     echo ""
-    echo "Authentication mode:"
-    echo "  1) api     - Use API key only"
-    echo "  2) login   - Use Claude subscription (requires login)"
-    echo "  3) hybrid  - Use subscription first, fallback to API (recommended)"
-    read -p "Choose [3]: " auth_choice
-    auth_choice=${auth_choice:-3}
+    read -p "Choose [1]: " auth_choice
+    auth_choice=${auth_choice:-1}
 
     case $auth_choice in
-        1) sed -i "s|AUTH_MODE=.*|AUTH_MODE=api|" "$SCRIPT_DIR/.env" ;;
-        2) sed -i "s|AUTH_MODE=.*|AUTH_MODE=login|" "$SCRIPT_DIR/.env" ;;
-        *) sed -i "s|AUTH_MODE=.*|AUTH_MODE=hybrid|" "$SCRIPT_DIR/.env" ;;
+        2)
+            sed -i "s|AUTH_MODE=.*|AUTH_MODE=api|" "$SCRIPT_DIR/.env"
+            echo ""
+            read -p "Anthropic API Key (sk-ant-...): " api_key
+            if [ -n "$api_key" ]; then
+                sed -i "s|ANTHROPIC_API_KEY=.*|ANTHROPIC_API_KEY=$api_key|" "$SCRIPT_DIR/.env"
+            else
+                log_warning "No API key provided. Add it to .env later."
+            fi
+            ;;
+        *)
+            sed -i "s|AUTH_MODE=.*|AUTH_MODE=oauth|" "$SCRIPT_DIR/.env"
+            echo ""
+            log_info "OAuth mode selected. You'll need to authenticate with Claude."
+            echo ""
+            if command -v claude &>/dev/null; then
+                read -p "Authenticate with Claude now? (Y/n): " do_claude_auth
+                do_claude_auth=${do_claude_auth:-y}
+                if [[ "$do_claude_auth" =~ ^[Yy]$ ]]; then
+                    echo ""
+                    log_info "Running 'claude login'..."
+                    claude login || log_warning "Claude login failed. Run 'claude login' manually later."
+                fi
+            else
+                log_warning "Claude Code CLI not found."
+                echo "  Install with: npm install -g @anthropic-ai/claude-code"
+                echo "  Then run: claude login"
+            fi
+            ;;
     esac
 
     log_success "Environment configured!"
@@ -178,16 +194,24 @@ else
 fi
 
 # =============================================================================
-# Claude Authentication (optional)
+# Claude Authentication (if not done earlier)
 # =============================================================================
-echo ""
-read -p "Do you want to authenticate with Claude now? (y/N): " do_auth
-if [[ "$do_auth" =~ ^[Yy]$ ]]; then
-    if command -v claude &>/dev/null; then
-        claude login
-    else
-        log_warning "Claude Code CLI not found."
-        log_info "Install with: npm install -g @anthropic-ai/claude-code"
+if [ -f "$SCRIPT_DIR/.env" ]; then
+    auth_mode=$(grep "^AUTH_MODE=" "$SCRIPT_DIR/.env" | cut -d'=' -f2)
+    if [ "$auth_mode" = "oauth" ]; then
+        # Check if already authenticated
+        if command -v claude &>/dev/null; then
+            if ! claude auth status &>/dev/null 2>&1; then
+                echo ""
+                read -p "Claude OAuth not configured. Authenticate now? (Y/n): " do_auth
+                do_auth=${do_auth:-y}
+                if [[ "$do_auth" =~ ^[Yy]$ ]]; then
+                    claude login || log_warning "Claude login failed."
+                fi
+            else
+                log_success "Claude authentication verified!"
+            fi
+        fi
     fi
 fi
 
