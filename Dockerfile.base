@@ -119,18 +119,18 @@ ENV PATH="/usr/local/cargo/bin:${PATH}"
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
 
 # =============================================================================
-# PHP 8.2+ (for WordPress development)
+# PHP 8.3 (for WordPress development) - Ubuntu 24.04 default
 # =============================================================================
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    php8.2 \
-    php8.2-cli \
-    php8.2-common \
-    php8.2-curl \
-    php8.2-mbstring \
-    php8.2-xml \
-    php8.2-zip \
-    php8.2-mysql \
-    php8.2-pgsql \
+    php8.3 \
+    php8.3-cli \
+    php8.3-common \
+    php8.3-curl \
+    php8.3-mbstring \
+    php8.3-xml \
+    php8.3-zip \
+    php8.3-mysql \
+    php8.3-pgsql \
     composer \
     && rm -rf /var/lib/apt/lists/*
 
@@ -204,7 +204,7 @@ RUN npm install -g react-native-cli
 # =============================================================================
 # Python Global Packages
 # =============================================================================
-RUN pip3 install --break-system-packages \
+RUN pip3 install --break-system-packages --ignore-installed \
     # Web frameworks
     fastapi \
     uvicorn \
