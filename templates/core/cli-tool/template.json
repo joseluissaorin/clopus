@@ -1,0 +1,40 @@
+{
+  "name": "cli-tool",
+  "description": "Command-line interface tool with TypeScript and interactive prompts",
+  "version": "1.0.0",
+  "type": "node",
+  "author": "CLOPUS",
+  "parameters": {
+    "PROJECT_NAME": {
+      "description": "Project name",
+      "default": "my-cli",
+      "required": true
+    },
+    "DESCRIPTION": {
+      "description": "CLI description",
+      "default": "A command-line interface tool",
+      "required": false
+    },
+    "BIN_NAME": {
+      "description": "CLI command name",
+      "default": "mycli",
+      "required": true
+    }
+  },
+  "technologies": [
+    "typescript",
+    "node",
+    "commander",
+    "inquirer",
+    "chalk",
+    "ora"
+  ],
+  "features": [
+    "commands",
+    "interactive-prompts",
+    "progress-indicators",
+    "colored-output",
+    "configuration",
+    "testing"
+  ]
+}

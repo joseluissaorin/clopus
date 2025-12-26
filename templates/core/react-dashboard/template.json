@@ -1,0 +1,43 @@
+{
+  "name": "react-dashboard",
+  "description": "Modern React admin dashboard with data visualization and user management",
+  "version": "1.0.0",
+  "type": "react",
+  "author": "CLOPUS",
+  "parameters": {
+    "PROJECT_NAME": {
+      "description": "Project name",
+      "default": "my-dashboard",
+      "required": true
+    },
+    "DESCRIPTION": {
+      "description": "Project description",
+      "default": "Admin dashboard built with React",
+      "required": false
+    },
+    "API_URL": {
+      "description": "Backend API URL",
+      "default": "http://localhost:8000/api",
+      "required": true
+    }
+  },
+  "technologies": [
+    "react",
+    "typescript",
+    "vite",
+    "tailwindcss",
+    "react-query",
+    "recharts",
+    "react-router-dom",
+    "zustand"
+  ],
+  "features": [
+    "authentication",
+    "dark-mode",
+    "data-tables",
+    "charts",
+    "user-management",
+    "responsive",
+    "sidebar-navigation"
+  ]
+}

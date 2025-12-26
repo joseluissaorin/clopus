@@ -1,0 +1,13 @@
+apiVersion: 1
+
+providers:
+  - name: 'CLOPUS'
+    orgId: 1
+    folder: 'CLOPUS'
+    folderUid: 'clopus'
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    allowUiUpdates: true
+    options:
+      path: /var/lib/grafana/dashboards

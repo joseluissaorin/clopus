@@ -1,0 +1,166 @@
+# CLOPUS Alert Rules
+
+groups:
+  - name: clopus-core
+    rules:
+      # Orchestrator alerts
+      - alert: OrchestratorDown
+        expr: up{job="orchestrator"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Orchestrator is down"
+          description: "The CLOPUS orchestrator has been down for more than 1 minute."
+
+      - alert: HighTaskQueueDepth
+        expr: clopus_task_queue_depth > 100
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High task queue depth"
+          description: "Task queue has {{ $value }} pending tasks."
+
+      - alert: LowConfidenceDecisions
+        expr: rate(clopus_low_confidence_decisions_total[5m]) > 5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High rate of low-confidence decisions"
+          description: "Many tasks are requiring user input due to low confidence."
+
+  - name: clopus-workers
+    rules:
+      - alert: WorkerDown
+        expr: up{job="workers"} == 0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Worker {{ $labels.instance }} is down"
+          description: "Worker has been unresponsive for more than 2 minutes."
+
+      - alert: AllWorkersDown
+        expr: count(up{job="workers"} == 1) == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "All workers are down"
+          description: "No workers are currently available."
+
+      - alert: WorkerHighCPU
+        expr: avg(rate(container_cpu_usage_seconds_total{name=~"worker.*"}[5m])) by (name) > 0.8
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Worker {{ $labels.name }} high CPU usage"
+          description: "Worker is using more than 80% CPU for 10+ minutes."
+
+      - alert: WorkerHighMemory
+        expr: (container_memory_usage_bytes{name=~"worker.*"} / container_spec_memory_limit_bytes{name=~"worker.*"}) > 0.9
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Worker {{ $labels.name }} high memory usage"
+          description: "Worker is using more than 90% of allocated memory."
+
+  - name: clopus-validation
+    rules:
+      - alert: HighValidationFailureRate
+        expr: rate(clopus_validation_failures_total[15m]) / rate(clopus_validation_total[15m]) > 0.3
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High validation failure rate"
+          description: "More than 30% of validations are failing."
+
+      - alert: ValidationPipelineStalled
+        expr: rate(clopus_validation_total[30m]) == 0 and clopus_active_tasks > 0
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Validation pipeline stalled"
+          description: "No validations completed in 30 minutes despite active tasks."
+
+  - name: infrastructure
+    rules:
+      - alert: PostgresDown
+        expr: up{job="postgres"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "PostgreSQL is down"
+          description: "PostgreSQL database is not responding."
+
+      - alert: RedisDown
+        expr: up{job="redis"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Redis is down"
+          description: "Redis cache is not responding."
+
+      - alert: ChromaDBDown
+        expr: up{job="chromadb"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "ChromaDB is down"
+          description: "ChromaDB vector database is not responding."
+
+      - alert: MinIODown
+        expr: up{job="minio"} == 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "MinIO is down"
+          description: "MinIO storage is not responding."
+
+      - alert: HighDiskUsage
+        expr: (node_filesystem_size_bytes - node_filesystem_avail_bytes) / node_filesystem_size_bytes > 0.85
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High disk usage"
+          description: "Disk usage is above 85% on {{ $labels.mountpoint }}."
+
+      - alert: HighMemoryUsage
+        expr: (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) > 0.9
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High memory usage"
+          description: "System memory usage is above 90%."
+
+  - name: clopus-github
+    rules:
+      - alert: GitHubSyncFailed
+        expr: increase(clopus_github_sync_failures_total[1h]) > 3
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "GitHub sync failures"
+          description: "Multiple GitHub sync failures in the last hour."
+
+      - alert: GitHubRateLimited
+        expr: clopus_github_rate_limit_remaining < 100
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "GitHub rate limit low"
+          description: "GitHub API rate limit is below 100 remaining requests."

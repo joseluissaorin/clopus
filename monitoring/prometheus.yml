@@ -5,48 +5,60 @@
 global:
   scrape_interval: 15s
   evaluation_interval: 15s
+  external_labels:
+    monitor: 'clopus'
 
 alerting:
   alertmanagers:
     - static_configs:
         - targets: []
 
-rule_files: []
+rule_files:
+  - '/etc/prometheus/alerts/*.yml'
 
 scrape_configs:
   # Prometheus self-monitoring
   - job_name: 'prometheus'
     static_configs:
       - targets: ['localhost:9090']
+    metrics_path: /metrics
 
   # CLOPUS Orchestrator
-  - job_name: 'clopus-orchestrator'
+  - job_name: 'orchestrator'
     static_configs:
       - targets: ['orchestrator:8080']
     metrics_path: /metrics
 
-  # Docker containers
-  - job_name: 'docker'
+  # Worker metrics
+  - job_name: 'workers'
     static_configs:
-      - targets: ['host.docker.internal:9323']
+      - targets:
+          - 'worker-1:9100'
+          - 'worker-2:9100'
+          - 'worker-3:9100'
+          - 'worker-4:9100'
+          - 'worker-5:9100'
+    metrics_path: /metrics
 
-  # PostgreSQL
+  # PostgreSQL metrics (via postgres_exporter)
   - job_name: 'postgres'
     static_configs:
-      - targets: ['postgres:5432']
+      - targets: ['postgres-exporter:9187']
 
-  # Redis
+  # Redis metrics (via redis_exporter)
   - job_name: 'redis'
     static_configs:
-      - targets: ['redis:6379']
+      - targets: ['redis-exporter:9121']
 
   # ChromaDB
   - job_name: 'chromadb'
     static_configs:
       - targets: ['chromadb:8000']
+    metrics_path: /metrics
 
   # MinIO
   - job_name: 'minio'
+    bearer_token_file: /etc/prometheus/minio-token
     static_configs:
       - targets: ['minio:9000']
     metrics_path: /minio/v2/metrics/cluster
@@ -54,5 +66,16 @@ scrape_configs:
   # Traefik
   - job_name: 'traefik'
     static_configs:
-      - targets: ['traefik:8080']
+      - targets: ['traefik:8082']
+    metrics_path: /metrics
+
+  # Node exporter (container host metrics)
+  - job_name: 'node'
+    static_configs:
+      - targets: ['node-exporter:9100']
+
+  # Docker container metrics (via cAdvisor)
+  - job_name: 'cadvisor'
+    static_configs:
+      - targets: ['cadvisor:8080']
     metrics_path: /metrics

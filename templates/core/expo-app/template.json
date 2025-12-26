@@ -1,0 +1,46 @@
+{
+  "name": "expo-app",
+  "description": "Cross-platform mobile app with Expo, React Native, and TypeScript",
+  "version": "1.0.0",
+  "type": "expo",
+  "author": "CLOPUS",
+  "parameters": {
+    "PROJECT_NAME": {
+      "description": "Project name",
+      "default": "my-app",
+      "required": true
+    },
+    "DESCRIPTION": {
+      "description": "App description",
+      "default": "A cross-platform mobile app",
+      "required": false
+    },
+    "BUNDLE_ID": {
+      "description": "Bundle identifier (e.g., com.company.app)",
+      "default": "com.example.app",
+      "required": true
+    },
+    "API_URL": {
+      "description": "Backend API URL",
+      "default": "https://api.example.com",
+      "required": true
+    }
+  },
+  "technologies": [
+    "expo",
+    "react-native",
+    "typescript",
+    "expo-router",
+    "nativewind",
+    "react-query",
+    "zustand"
+  ],
+  "features": [
+    "authentication",
+    "navigation",
+    "push-notifications",
+    "offline-support",
+    "dark-mode",
+    "secure-storage"
+  ]
+}
