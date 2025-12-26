@@ -46,8 +46,39 @@ set -e
 WORKER_ID=${WORKER_ID:-1}
 WORKER_ROLE=${WORKER_ROLE:-coder}
 IPC_PATH=${IPC_PATH:-/app/ipc}
+AUTH_MODE=${AUTH_MODE:-oauth}
 
 echo "[Worker $WORKER_ID] Starting as $WORKER_ROLE..."
+
+# =============================================================================
+# Authentication Setup
+# =============================================================================
+
+# Check if .claude directory is mounted (preferred for OAuth)
+if [ -d "/root/.claude-host" ] && [ -f "/root/.claude-host/.credentials.json" ]; then
+    echo "[Worker $WORKER_ID] Using mounted OAuth credentials..."
+    cp -r /root/.claude-host/* /root/.claude/
+    chmod 600 /root/.claude/.credentials.json 2>/dev/null || true
+elif [ -n "$CLAUDE_OAUTH_TOKEN" ]; then
+    echo "[Worker $WORKER_ID] Using OAuth token from environment..."
+    # Create credentials file from token
+    mkdir -p /root/.claude
+    cat > /root/.claude/.credentials.json << CREDS
+{
+  "claudeAiOauth": {
+    "accessToken": "$CLAUDE_OAUTH_TOKEN",
+    "expiresAt": 9999999999999
+  }
+}
+CREDS
+    chmod 600 /root/.claude/.credentials.json
+elif [ -n "$ANTHROPIC_API_KEY" ]; then
+    echo "[Worker $WORKER_ID] Using API key..."
+    export ANTHROPIC_API_KEY
+else
+    echo "[Worker $WORKER_ID] WARNING: No authentication configured!"
+    echo "[Worker $WORKER_ID] Set CLAUDE_OAUTH_TOKEN, mount ~/.claude, or set ANTHROPIC_API_KEY"
+fi
 
 # Create IPC directories for this worker
 mkdir -p "$IPC_PATH/tasks/$WORKER_ID"

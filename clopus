@@ -396,13 +396,6 @@ cmd_setup() {
     if [ ! -f "$SCRIPT_DIR/.env" ]; then
         log_info "Creating .env file..."
         cp "$SCRIPT_DIR/.env.example" "$SCRIPT_DIR/.env"
-
-        # Prompt for API key
-        echo ""
-        read -p "Enter your Anthropic API Key (or press Enter to skip): " api_key
-        if [ -n "$api_key" ]; then
-            sed -i "s/ANTHROPIC_API_KEY=.*/ANTHROPIC_API_KEY=$api_key/" "$SCRIPT_DIR/.env"
-        fi
     fi
 
     # Create necessary directories
@@ -415,22 +408,95 @@ cmd_setup() {
     touch "$SCRIPT_DIR/tools/generated/.gitkeep"
     touch "$SCRIPT_DIR/browser/profiles/.gitkeep"
 
-    # Check anthropic session directory
-    mkdir -p "$HOME/.anthropic"
+    # Create Claude credentials directory
+    mkdir -p "$HOME/.claude"
 
     log_success "Setup complete!"
-    log_info "Edit .env to configure your settings, then run './clopus start'"
+    echo ""
+
+    # Check authentication status
+    if [ -f "$HOME/.claude/.credentials.json" ]; then
+        log_success "OAuth credentials found in ~/.claude/"
+        log_info "CLOPUS will use your existing Claude authentication."
+    else
+        log_warning "No OAuth credentials found."
+        echo ""
+        echo -e "${BOLD}CLOPUS uses Claude Max/Pro subscription via OAuth (recommended).${NC}"
+        echo ""
+        echo "To authenticate, run:"
+        echo "  ./clopus login"
+        echo ""
+        echo "This will open your browser to authenticate with your Claude account."
+        echo ""
+        echo "Alternatively, you can set ANTHROPIC_API_KEY in .env for API-based auth."
+    fi
+    echo ""
+    log_info "Next steps:"
+    echo "  1. Run './clopus login' to authenticate with Claude (if not done)"
+    echo "  2. Run './clopus start' to launch the system"
 }
 
 # Login command
 cmd_login() {
-    log_info "Authenticating with Claude..."
+    log_info "Authenticating with Claude OAuth..."
+    echo ""
+
+    # Check if Claude Code CLI is installed
+    if ! command -v claude &>/dev/null; then
+        log_error "Claude Code CLI not found."
+        log_info "Install with: npm install -g @anthropic-ai/claude-code"
+        exit 1
+    fi
+
+    # Check if already authenticated
+    if [ -f "$HOME/.claude/.credentials.json" ]; then
+        log_info "Found existing OAuth credentials."
+        read -p "Re-authenticate? (y/N): " reauth
+        if [[ ! "$reauth" =~ ^[Yy]$ ]]; then
+            log_info "Using existing credentials."
+            return 0
+        fi
+    fi
+
+    echo ""
+    log_info "Step 1: Running 'claude login' to authenticate with Claude Max/Pro..."
+    echo ""
 
     # Run Claude Code login
-    if command -v claude &>/dev/null; then
-        claude login
+    claude login
+
+    # Check if login succeeded
+    if [ -f "$HOME/.claude/.credentials.json" ]; then
+        log_success "OAuth authentication successful!"
+        echo ""
+        log_info "Your OAuth credentials are stored in: ~/.claude/"
+        log_info "CLOPUS workers will automatically use these credentials."
+        echo ""
+
+        # Optionally generate a token for the .env file
+        echo -e "${CYAN}Optional: Generate a long-lived token for .env file?${NC}"
+        echo "This allows you to share credentials with containers without mounting ~/.claude"
+        read -p "Generate token? (y/N): " gen_token
+
+        if [[ "$gen_token" =~ ^[Yy]$ ]]; then
+            log_info "Step 2: Generating long-lived token..."
+            if command -v claude &>/dev/null && claude setup-token &>/dev/null; then
+                token=$(claude setup-token 2>/dev/null | grep -o 'sk-[a-zA-Z0-9-]*' | head -1 || true)
+                if [ -n "$token" ]; then
+                    log_success "Token generated!"
+                    log_info "Add this to your .env file:"
+                    echo ""
+                    echo "CLAUDE_OAUTH_TOKEN=$token"
+                    echo ""
+                else
+                    log_warning "Could not extract token. You can run 'claude setup-token' manually."
+                fi
+            else
+                log_warning "setup-token not available. Your mounted credentials will be used instead."
+            fi
+        fi
     else
-        log_error "Claude Code CLI not found. Install with: npm install -g @anthropic-ai/claude-code"
+        log_error "OAuth authentication failed. Please try again."
         exit 1
     fi
 }
@@ -535,7 +601,16 @@ main() {
             cmd_login
             ;;
         logout)
-            rm -rf "$HOME/.anthropic/session.json"
+            log_info "Logging out of Claude OAuth..."
+            # Clear Claude Code OAuth credentials
+            if [ -f "$HOME/.claude/.credentials.json" ]; then
+                rm -f "$HOME/.claude/.credentials.json"
+                log_success "OAuth credentials removed."
+            else
+                log_info "No OAuth credentials found."
+            fi
+            # Also clear any legacy anthropic session
+            rm -f "$HOME/.anthropic/session.json" 2>/dev/null || true
             log_success "Logged out."
             ;;
         setup)

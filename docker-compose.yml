@@ -6,9 +6,10 @@
 version: '3.8'
 
 x-common-env: &common-env
-  ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+  AUTH_MODE: ${AUTH_MODE:-oauth}
+  CLAUDE_OAUTH_TOKEN: ${CLAUDE_OAUTH_TOKEN:-}
+  ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
   GITHUB_TOKEN: ${GITHUB_TOKEN:-}
-  AUTH_MODE: ${AUTH_MODE:-hybrid}
   LOG_LEVEL: ${LOG_LEVEL:-INFO}
 
 x-worker-common: &worker-common
@@ -17,9 +18,9 @@ x-worker-common: &worker-common
     dockerfile: Dockerfile.worker
   volumes:
     - workspace:/workspace
+    - claude-auth:/root/.claude-host:ro
     - gh-config:/root/.config/gh:ro
     - ssh-keys:/root/.ssh:ro
-    - anthropic-session:/root/.anthropic
     - ipc:/app/ipc
     - ./skills:/app/skills:ro
     - ./workers/system-prompts:/app/system-prompts:ro
@@ -433,12 +434,12 @@ volumes:
       type: none
       o: bind
       device: ${HOME}/.ssh
-  anthropic-session:
+  claude-auth:
     driver: local
     driver_opts:
       type: none
       o: bind
-      device: ${HOME}/.anthropic
+      device: ${HOME}/.claude
   ipc:
 
   # Browser
