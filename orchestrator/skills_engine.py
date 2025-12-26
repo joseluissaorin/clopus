@@ -380,3 +380,22 @@ class SkillsEngine:
             categorized[category].append(skill)
 
         return categorized
+
+    async def find_skill_for_task(self, task_description: str) -> Optional[Dict]:
+        """Find the best matching skill for a task description."""
+        if not task_description:
+            return None
+
+        try:
+            # Search for matching skills
+            matches = await self.search_skills(task_description)
+
+            if matches:
+                # Return the best match
+                return matches[0]
+
+            return None
+
+        except Exception as e:
+            logger.warning(f"Error finding skill for task: {e}")
+            return None

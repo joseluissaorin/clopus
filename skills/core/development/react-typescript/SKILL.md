@@ -1,6 +1,6 @@
 ---
 name: react-typescript
-description: Build React applications with TypeScript
+description: Build React applications with TypeScript, Vite, or Next.js. Use when creating React components, implementing hooks, setting up state management, or building modern frontend UIs. Covers functional components, custom hooks, Context/Zustand/Redux, Tailwind CSS styling, and testing with Jest.
 version: 1.0.0
 author: CLOPUS
 model: claude-sonnet-4-20250514

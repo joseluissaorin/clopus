@@ -54,6 +54,69 @@ else
     echo "[Worker $WORKER_ID] Set CLAUDE_OAUTH_TOKEN, mount ~/.claude, or set ANTHROPIC_API_KEY"
 fi
 
+# =============================================================================
+# Native Claude Code Skills Setup
+# =============================================================================
+# Claude Code auto-discovers skills from ~/.claude/skills/
+# This enables progressive disclosure (metadata loaded first, content on-demand)
+
+SKILLS_DIR="$HOME/.claude/skills"
+SKILLS_SOURCE="/app/skills"
+
+mkdir -p "$SKILLS_DIR"
+
+# Set up skills based on worker role
+setup_skills_for_role() {
+    local role=$1
+    local categories=""
+
+    case $role in
+        coder)
+            categories="development testing"
+            ;;
+        tester)
+            categories="testing development"
+            ;;
+        reviewer)
+            categories="security testing"
+            ;;
+        researcher)
+            categories="research data"
+            ;;
+        debugger)
+            categories="development testing security"
+            ;;
+        deployer)
+            categories="devops security"
+            ;;
+        *)
+            categories="development testing"
+            ;;
+    esac
+
+    # Symlink skills by category
+    for category in $categories; do
+        if [ -d "$SKILLS_SOURCE/core/$category" ]; then
+            for skill_dir in "$SKILLS_SOURCE/core/$category"/*; do
+                if [ -d "$skill_dir" ] && [ -f "$skill_dir/SKILL.md" ]; then
+                    skill_name=$(basename "$skill_dir")
+                    # Symlink if not exists
+                    if [ ! -e "$SKILLS_DIR/$skill_name" ]; then
+                        ln -sf "$skill_dir" "$SKILLS_DIR/$skill_name"
+                    fi
+                fi
+            done
+        fi
+    done
+}
+
+# Set up skills for this worker's role
+setup_skills_for_role "$WORKER_ROLE"
+
+# Count skills
+SKILL_COUNT=$(find "$SKILLS_DIR" -maxdepth 1 -type l 2>/dev/null | wc -l)
+echo "[Worker $WORKER_ID] Claude Code skills configured: $SKILL_COUNT skills for role $WORKER_ROLE"
+
 # Create IPC directories for this worker
 mkdir -p "$IPC_PATH/tasks/$WORKER_ID"
 
@@ -98,11 +161,27 @@ while true; do
             SYSTEM_PROMPT=$(cat "$BASE_PROMPT_FILE")
         fi
         if [ -f "$SYSTEM_PROMPT_FILE" ]; then
-            SYSTEM_PROMPT="$SYSTEM_PROMPT\n\n$(cat $SYSTEM_PROMPT_FILE)"
+            if [ -n "$SYSTEM_PROMPT" ]; then
+                SYSTEM_PROMPT="$SYSTEM_PROMPT
+
+---
+
+$(cat $SYSTEM_PROMPT_FILE)"
+            else
+                SYSTEM_PROMPT=$(cat "$SYSTEM_PROMPT_FILE")
+            fi
         fi
+
+        echo "[Worker $WORKER_ID] Role: $WORKER_ROLE, System prompt loaded: $([[ -n "$SYSTEM_PROMPT" ]] && echo "yes" || echo "no")"
 
         # Run Claude Code
         cd "$TASK_CWD"
+
+        # Write system prompt to file for Claude Code to use
+        SYSTEM_PROMPT_TMP="$TASK_CWD/.claude_system_prompt_$WORKER_ID"
+        if [ -n "$SYSTEM_PROMPT" ]; then
+            echo "$SYSTEM_PROMPT" > "$SYSTEM_PROMPT_TMP"
+        fi
 
         # Start background heartbeat while executing task
         (
@@ -113,8 +192,24 @@ while true; do
         ) &
         HEARTBEAT_PID=$!
 
+        # Build prompt with system context prepended
+        FULL_PROMPT="$TASK_PROMPT"
+        if [ -n "$SYSTEM_PROMPT" ]; then
+            # Prepend role-specific context to the task
+            FULL_PROMPT="[ROLE: $WORKER_ROLE Worker]
+
+$SYSTEM_PROMPT
+
+---
+TASK:
+$TASK_PROMPT"
+        fi
+
         # Execute Claude Code with the task (skip permissions for autonomous operation)
-        RESULT=$(claude --print --dangerously-skip-permissions "$TASK_PROMPT" 2>&1) || RESULT="Error: $?"
+        RESULT=$(claude --print --dangerously-skip-permissions "$FULL_PROMPT" 2>&1) || RESULT="Error: $?"
+
+        # Cleanup temp file
+        rm -f "$SYSTEM_PROMPT_TMP" 2>/dev/null || true
 
         # Stop background heartbeat
         kill $HEARTBEAT_PID 2>/dev/null || true

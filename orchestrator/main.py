@@ -22,10 +22,13 @@ from .confidence_engine import ConfidenceEngine
 from .status_reporter import StatusReporter
 from .user_interaction import UserInteractionHandler
 from .github_sync import GitHubSync
-from .service_manager import ServiceManager
 from .skills_engine import SkillsEngine
 from .mcp_generator import MCPGenerator
 from .template_extractor import TemplateExtractor
+from .project_setup import ProjectSetup
+from .service_manager import ServiceManager
+from .capability_installer import CapabilityInstaller
+from .knowledge_base import KnowledgeBase
 from validation.pipeline import ValidationPipeline
 
 # Configure logging
@@ -60,6 +63,7 @@ class Orchestrator:
         self.mcp_generator: Optional[MCPGenerator] = None
         self.template_extractor: Optional[TemplateExtractor] = None
         self.validation_pipeline: Optional[ValidationPipeline] = None
+        self.project_setup: Optional[ProjectSetup] = None
 
     async def initialize(self) -> None:
         """Initialize all components."""
@@ -162,6 +166,29 @@ class Orchestrator:
         )
         logger.info("Validation pipeline initialized")
 
+        self.project_setup = ProjectSetup("/workspace")
+        logger.info("Project setup initialized")
+
+        self.service_manager = ServiceManager("/app/docker-compose.yml")
+        logger.info("Service manager initialized")
+
+        self.capability_installer = CapabilityInstaller(self.worker_pool)
+        logger.info("Capability installer initialized")
+
+        self.knowledge_base = KnowledgeBase(self.memory, "/app/knowledge")
+        logger.info("Knowledge base initialized")
+
+        # =====================================================================
+        # CONNECT COMPONENTS FOR INTEGRATION
+        # =====================================================================
+        # Connect skills engine to task planner for skill-aware planning
+        self.task_planner.set_skills_engine(self.skills_engine)
+        self.task_planner.set_template_extractor(self.template_extractor)
+
+        # Connect skills engine to worker pool for skill-enhanced prompts
+        self.worker_pool.set_skills_engine(self.skills_engine)
+
+        logger.info("Component integrations configured")
         logger.info("CLOPUS orchestrator fully initialized")
 
     async def start(self) -> None:
@@ -292,6 +319,65 @@ class Orchestrator:
                 )
                 return
 
+            # =====================================================================
+            # CREATE PROJECT WITH CLAUDE.md
+            # =====================================================================
+            # Determine project path from parsed objective
+            project_name = parsed.get("project_name") or f"project-{objective.id[:8]}"
+            project_path = f"/workspace/{project_name}"
+            project_type = parsed.get("project_type")
+
+            # Create CLAUDE.md for the project
+            try:
+                claude_md_path = await self.project_setup.setup_project(
+                    project_path=project_path,
+                    objective_content=content,
+                    project_type=project_type
+                )
+                logger.info(f"Created CLAUDE.md at {claude_md_path}")
+
+                # Store project info in memory for workers to use
+                await self.memory.log_activity(
+                    source="project_setup",
+                    action="created",
+                    details={
+                        "objective_id": objective.id,
+                        "project_path": project_path,
+                        "claude_md": str(claude_md_path)
+                    }
+                )
+            except Exception as e:
+                logger.warning(f"Could not create CLAUDE.md: {e}")
+
+            # =====================================================================
+            # AUTO-PROVISION REQUIRED SERVICES (Tier 2)
+            # =====================================================================
+            try:
+                service_needs = await self.service_manager.analyze_project_needs(
+                    project_path=project_path,
+                    parsed_objective=parsed
+                )
+
+                if service_needs.get("databases") or service_needs.get("queues"):
+                    logger.info(f"Project needs services: {service_needs}")
+                    provision_results = await self.service_manager.provision_services(service_needs)
+
+                    for service, success in provision_results.items():
+                        if success:
+                            logger.info(f"Provisioned service: {service}")
+                        else:
+                            logger.warning(f"Failed to provision service: {service}")
+
+                if service_needs.get("missing_credentials"):
+                    # Ask user for missing credentials
+                    await self.user_interaction.ask_clarification(
+                        f"Missing credentials for external services: {', '.join(service_needs['missing_credentials'])}",
+                        objective_id=objective.id,
+                        confidence_score=0.3
+                    )
+            except Exception as e:
+                logger.warning(f"Error analyzing service needs: {e}")
+
             # Plan tasks
             tasks = await self.task_planner.plan(objective.id, parsed)
             logger.info(f"Created {len(tasks)} tasks for objective")
@@ -329,12 +415,34 @@ class Orchestrator:
                     worker.role
                 )
 
-                # Dispatch to worker
+                # =====================================================================
+                # GET RELEVANT SKILLS AND MEMORY CONTEXT
+                # =====================================================================
+                relevant_skills = []
+                memory_context = None
+
+                # Find relevant skills for the task
+                if self.skills_engine:
+                    skill = await self._find_skill_for_task(task.title + " " + (task.description or ""))
+                    if skill:
+                        relevant_skills.append(skill)
+
+                # Get relevant memory context
+                try:
+                    memory_context = await self.memory.get_relevant_context(
+                        task.title + " " + (task.description or "")
+                    )
+                except Exception:
+                    pass
+
+                # Dispatch to worker with context
                 await self.worker_pool.dispatch_task(
                     worker.id,
                     task.id,
                     task.title,
-                    task.description
+                    task.description,
+                    relevant_skills=relevant_skills if relevant_skills else None,
+                    memory_context=memory_context
                 )
 
                 logger.info(f"Assigned task '{task.title}' to worker {worker.id}")
@@ -429,20 +537,73 @@ class Orchestrator:
                     success = result.get("status") == "completed"
 
                     if task_id:
+                        # Get task details for validation BEFORE marking complete
+                        task = await self.memory.short_term.get_task(task_id)
+
+                        # =====================================================================
+                        # MANDATORY VALIDATION - Tasks FAIL if validation fails
+                        # =====================================================================
+                        validation_passed = True
+                        if task and success and task.worker_role in ("coder", "tester", "debugger"):
+                            validation_passed = await self._run_validation(task)
+
+                            if not validation_passed:
+                                # OVERRIDE success - validation failure means task failure
+                                success = False
+                                logger.error(
+                                    f"Task {task_id} marked as FAILED due to validation failure"
+                                )
+
                         await self.memory.complete_task(
                             task_id,
                             worker_id,
                             success,
                             result.get("result"),
-                            result.get("error")
+                            result.get("error") or ("Validation failed" if not validation_passed else None)
                         )
 
-                        # Get task details for validation
-                        task = await self.memory.short_term.get_task(task_id)
                         if task:
-                            # Run validation on completed coding tasks
-                            if success and task.worker_role in ("coder", "tester"):
-                                await self._run_validation(task)
+                            # =============================================================
+                            # RECORD OUTCOME FOR LEARNING (Confidence Engine)
+                            # =============================================================
+                            try:
+                                await self.confidence_engine.record_task_outcome(
+                                    task_id=task.id,
+                                    task_type=task.worker_role,
+                                    success=success,
+                                    validation_passed=validation_passed,
+                                    error=result.get("error")
+                                )
+                            except Exception as e:
+                                logger.warning(f"Error recording task outcome: {e}")
+
+                            # =============================================================
+                            # LEARN FROM OUTCOME (Knowledge Base)
+                            # =============================================================
+                            try:
+                                if success and validation_passed:
+                                    # Learn from success
+                                    await self.knowledge_base.learn_from_task_success(
+                                        task_title=task.title,
+                                        task_description=task.description or "",
+                                        approach=result.get("result", "")[:1000]
+                                    )
+                                else:
+                                    # Learn from failure
+                                    await self.knowledge_base.learn_from_task_failure(
+                                        task_title=task.title,
+                                        task_description=task.description or "",
+                                        error=result.get("error", "Unknown error"),
+                                        validation_failures=None  # Could extract from validation result
+                                    )
+                            except Exception as e:
+                                logger.warning(f"Error learning from outcome: {e}")
+
+                            # =============================================================
+                            # EXTRACT SKILL FROM SUCCESSFUL TASK (Self-Generating)
+                            # =============================================================
+                            if success and validation_passed:
+                                await self._extract_skill_from_task(task, result)
 
                             # Check if objective is complete
                             objective_tasks = await self.memory.short_term.get_tasks_for_objective(
@@ -462,9 +623,10 @@ class Orchestrator:
                                     success=all_success
                                 )
 
-                                # Extract template from successful projects
+                                # Extract template and sync to GitHub
                                 if all_success:
                                     await self._extract_template_if_applicable(task.objective_id)
+                                    await self._sync_to_github_if_applicable(task.objective_id)
 
                 # Update worker heartbeats
                 await self.worker_pool.check_heartbeats()
@@ -496,8 +658,13 @@ class Orchestrator:
     # VALIDATION & SELF-GENERATING ECOSYSTEM
     # =========================================================================
 
-    async def _run_validation(self, task) -> None:
-        """Run validation pipeline on completed task."""
+    async def _run_validation(self, task) -> bool:
+        """
+        Run validation pipeline on completed task.
+
+        MANDATORY: Tasks FAIL if validation fails.
+        Returns True if validation passed, False if failed.
+        """
         try:
             # Determine project path from task context
             project_path = "/workspace"  # Default
@@ -510,7 +677,7 @@ class Orchestrator:
                 if path_match:
                     project_path = path_match.group(0).rsplit('/', 1)[0]
 
-            logger.info(f"Running validation on {project_path} for task {task.id}")
+            logger.info(f"[MANDATORY VALIDATION] Running on {project_path} for task {task.id}")
 
             # Run validation pipeline
             result = await self.validation_pipeline.validate(
@@ -520,24 +687,38 @@ class Orchestrator:
 
             # Log validation result
             if result.passed:
-                logger.info(f"Validation passed for task {task.id}: {result.summary}")
+                logger.info(f"✓ Validation PASSED for task {task.id}: {result.summary}")
                 await self.memory.log_activity(
                     source="validation",
                     action="passed",
                     details={"task_id": task.id, "summary": result.summary}
                 )
+                return True
             else:
-                logger.warning(f"Validation failed for task {task.id}: {result.summary}")
+                # =====================================================================
+                # VALIDATION FAILED - TASK MUST FAIL
+                # =====================================================================
+                logger.error(f"✗ VALIDATION FAILED for task {task.id}: {result.summary}")
+
+                # Get failed stages for detailed error
+                failed_stages = [
+                    s.stage.value if hasattr(s.stage, 'value') else str(s.stage)
+                    for s in result.stages
+                    if (s.status.value if hasattr(s.status, 'value') else str(s.status)) == "failed"
+                ]
+
                 await self.memory.log_activity(
                     source="validation",
                     action="failed",
                     details={
                         "task_id": task.id,
                         "summary": result.summary,
+                        "failed_stages": failed_stages,
                         "stages": [
                             {
                                 "stage": s.stage.value if hasattr(s.stage, 'value') else str(s.stage),
-                                "status": s.status.value if hasattr(s.status, 'value') else str(s.status)
+                                "status": s.status.value if hasattr(s.status, 'value') else str(s.status),
+                                "message": getattr(s, 'message', None) or getattr(s, 'error', None)
                             }
                             for s in result.stages
                         ]
@@ -551,16 +732,53 @@ class Orchestrator:
                     metadata={
                         "type": "validation_failure",
                         "task_id": task.id,
-                        "stages_failed": [
-                            s.stage.value if hasattr(s.stage, 'value') else str(s.stage)
-                            for s in result.stages
-                            if (s.status.value if hasattr(s.status, 'value') else str(s.status)) == "failed"
-                        ]
+                        "stages_failed": failed_stages
                     }
                 )
 
+                # Create a fix task for the debugger
+                await self._create_fix_task(task, failed_stages, result.summary)
+
+                return False
+
         except Exception as e:
             logger.error(f"Error running validation: {e}")
+            # On error, fail the task to be safe
+            return False
+
+    async def _create_fix_task(self, original_task, failed_stages: list, error_summary: str) -> None:
+        """Create a fix task for the debugger when validation fails."""
+        try:
+            fix_description = f"""
+VALIDATION FAILURE - Fix Required
+
+Original Task: {original_task.title}
+Failed Validation Stages: {', '.join(failed_stages)}
+Error Summary: {error_summary}
+
+Please:
+1. Analyze the validation errors
+2. Fix the code to pass all validation stages
+3. Re-run validation to confirm fixes
+
+Failed stages need to pass:
+{chr(10).join(f'- {stage}' for stage in failed_stages)}
+"""
+
+            await self.memory.create_tasks(original_task.objective_id, [
+                {
+                    "title": f"Fix validation failures: {original_task.title}",
+                    "description": fix_description,
+                    "priority": 1,  # High priority
+                    "dependencies": [],
+                    "worker_role": "debugger"
+                }
+            ])
+
+            logger.info(f"Created fix task for validation failures in task {original_task.id}")
+
+        except Exception as e:
+            logger.error(f"Error creating fix task: {e}")
 
     async def _extract_template_if_applicable(self, objective_id: str) -> None:
         """Extract a template from completed objective if applicable."""
@@ -647,6 +865,128 @@ class Orchestrator:
         except Exception as e:
             logger.error(f"Error finding skill: {e}")
             return None
+
+    async def _extract_skill_from_task(self, task, result: dict) -> None:
+        """
+        Extract a reusable skill from a successful task.
+        Part of the self-generating ecosystem.
+        """
+        if not self.skills_engine:
+            return
+
+        try:
+            task_description = f"{task.title}: {task.description or ''}"
+            task_result = result.get("result", "")
+
+            # Only extract from non-trivial tasks
+            if len(task_description) < 50:
+                return
+
+            # Try to extract skill
+            skill = await self.skills_engine.extract_skill_from_task(
+                task_description=task_description,
+                task_result={"result": task_result},
+                success=True
+            )
+
+            if skill:
+                logger.info(f"Extracted skill from task: {skill.get('name')}")
+                await self.memory.log_activity(
+                    source="skills_engine",
+                    action="extracted",
+                    details={"skill_name": skill.get("name"), "task_id": task.id}
+                )
+
+        except Exception as e:
+            logger.warning(f"Error extracting skill from task: {e}")
+
+    async def _sync_to_github_if_applicable(self, objective_id: str) -> None:
+        """
+        Sync completed project to GitHub.
+        Creates repo if needed and pushes all changes.
+        """
+        if not self.github_sync:
+            return
+
+        try:
+            objective = await self.memory.short_term.get_objective(objective_id)
+            if not objective:
+                return
+
+            # Check if this is a project that should be synced
+            content_lower = objective.content.lower()
+            is_project = any(
+                keyword in content_lower
+                for keyword in ["create", "build", "develop", "implement", "make"]
+            )
+
+            if not is_project:
+                return
+
+            # Find project path
+            from pathlib import Path
+            import re
+
+            path_match = re.search(r'/workspace/([\w\-]+)', objective.content)
+            if path_match:
+                project_name = path_match.group(1)
+                project_path = Path(f"/workspace/{project_name}")
+            else:
+                workspace = Path("/workspace")
+                recent_dirs = sorted(
+                    [d for d in workspace.iterdir() if d.is_dir()],
+                    key=lambda x: x.stat().st_mtime,
+                    reverse=True
+                )
+                if recent_dirs:
+                    project_path = recent_dirs[0]
+                    project_name = project_path.name
+                else:
+                    return
+
+            if not project_path.exists():
+                return
+
+            # Check if already a git repo
+            is_git_repo = (project_path / ".git").exists()
+
+            if not is_git_repo:
+                # Create GitHub repo
+                logger.info(f"Creating GitHub repository for {project_name}")
+                repo_url = await self.github_sync.create_project_repo(
+                    project_name=project_name,
+                    description=objective.content[:100],
+                    private=True,  # Default to private
+                    local_path=project_path
+                )
+
+                if repo_url:
+                    logger.info(f"Created GitHub repository: {repo_url}")
+                    await self.memory.log_activity(
+                        source="github_sync",
+                        action="repo_created",
+                        details={"repo_url": repo_url, "project": project_name}
+                    )
+
+            # Push changes
+            pushed = await self.github_sync.push_project(
+                local_path=project_path,
+                commit_message=f"[CLOPUS] Project completed: {objective.content[:50]}"
+            )
+
+            if pushed:
+                logger.info(f"Pushed project {project_name} to GitHub")
+                await self.memory.log_activity(
+                    source="github_sync",
+                    action="pushed",
+                    details={"project": project_name}
+                )
+
+            # Also sync any generated skills/templates/MCPs
+            await self.github_sync.sync_all()
+
+        except Exception as e:
+            logger.error(f"Error syncing to GitHub: {e}")
 
 
 async def main():

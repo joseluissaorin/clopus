@@ -1,6 +1,6 @@
 ---
 name: jest-unit
-description: Write comprehensive unit tests with Jest for JavaScript/TypeScript
+description: Write comprehensive unit tests with Jest for JavaScript and TypeScript projects. Use when writing tests, adding test coverage, testing React components, mocking dependencies, or setting up test infrastructure. Covers describe/it blocks, assertions, mocking, async testing, snapshot tests, and coverage reports.
 version: 1.0.0
 author: CLOPUS
 tools:

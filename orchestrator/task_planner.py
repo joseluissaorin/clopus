@@ -36,6 +36,10 @@ class TaskPlanner:
         self.confidence = confidence_engine
         self.parser = objective_parser
 
+        # Skills engine and template extractor (set by orchestrator)
+        self.skills_engine = None
+        self.template_extractor = None
+
         # Standard task patterns for common project types
         self.project_templates = {
             "todo_app": self._todo_app_tasks,
@@ -66,10 +70,51 @@ class TaskPlanner:
         technologies = parsed_objective.get("technologies", [])
         features = parsed_objective.get("features", [])
         complexity = parsed_objective.get("estimated_complexity", "medium")
+        objective_description = parsed_objective.get("description", "")
+
+        # =====================================================================
+        # CHECK FOR EXISTING TEMPLATES
+        # =====================================================================
+        applied_template = None
+        if self.template_extractor:
+            try:
+                matching_templates = await self._find_matching_templates(
+                    project_type, technologies, objective_description
+                )
+                if matching_templates:
+                    applied_template = matching_templates[0]
+                    logger.info(f"Found matching template: {applied_template.get('name')}")
+            except Exception as e:
+                logger.warning(f"Error searching templates: {e}")
+
+        # =====================================================================
+        # FIND RELEVANT SKILLS
+        # =====================================================================
+        relevant_skills = []
+        if self.skills_engine:
+            try:
+                # Search for skills matching project type and technologies
+                search_terms = [project_type] + technologies[:3]
+                for term in search_terms:
+                    skills = await self.skills_engine.search_skills(term)
+                    for skill in skills[:2]:  # Top 2 per term
+                        if skill not in relevant_skills:
+                            relevant_skills.append(skill)
+                if relevant_skills:
+                    logger.info(f"Found {len(relevant_skills)} relevant skills for planning")
+            except Exception as e:
+                logger.warning(f"Error searching skills: {e}")
 
         # Get template-based tasks
         template_fn = self.project_templates.get(project_type, self._custom_tasks)
         base_tasks = template_fn(parsed_objective)
+
+        # If we have a template, use its structure instead
+        if applied_template:
+            template_tasks = await self._tasks_from_template(applied_template, parsed_objective)
+            if template_tasks:
+                base_tasks = template_tasks
+                logger.info(f"Using {len(template_tasks)} tasks from template")
 
         # Add feature-specific tasks
         feature_tasks = self._plan_feature_tasks(features, technologies)
@@ -79,6 +124,13 @@ class TaskPlanner:
         context = await self.memory.get_relevant_context(
             f"task planning for {project_type} with {technologies}"
         )
+
+        # Store relevant skills in task metadata for workers
+        if relevant_skills:
+            parsed_objective["_relevant_skills"] = [
+                {"name": s["name"], "path": s["path"]}
+                for s in relevant_skills[:5]
+            ]
 
         # Add testing tasks
         test_tasks = self._plan_testing_tasks(base_tasks, complexity)
@@ -713,3 +765,87 @@ class TaskPlanner:
             ))
 
         return tasks
+
+    # =========================================================================
+    # TEMPLATE & SKILL INTEGRATION
+    # =========================================================================
+
+    async def _find_matching_templates(
+        self,
+        project_type: str,
+        technologies: List[str],
+        description: str
+    ) -> List[Dict]:
+        """Find templates matching the project requirements."""
+        if not self.template_extractor:
+            return []
+
+        try:
+            # Get all templates
+            templates = await self.template_extractor.list_templates()
+
+            matches = []
+            for template in templates:
+                score = 0
+
+                # Match project type
+                if project_type in template.get("name", "").lower():
+                    score += 3
+
+                # Match technologies
+                template_techs = template.get("technologies", [])
+                for tech in technologies:
+                    if tech.lower() in [t.lower() for t in template_techs]:
+                        score += 2
+
+                # Match description keywords
+                desc_lower = description.lower()
+                if any(kw in desc_lower for kw in template.get("keywords", [])):
+                    score += 1
+
+                if score > 0:
+                    matches.append((template, score))
+
+            # Sort by score
+            matches.sort(key=lambda x: x[1], reverse=True)
+            return [m[0] for m in matches[:3]]
+
+        except Exception as e:
+            logger.warning(f"Error finding templates: {e}")
+            return []
+
+    async def _tasks_from_template(
+        self,
+        template: Dict,
+        parsed_objective: Dict
+    ) -> List[PlannedTask]:
+        """Generate tasks from a template structure."""
+        tasks = []
+
+        # Use template's task structure if available
+        template_tasks = template.get("tasks", [])
+
+        for i, t_task in enumerate(template_tasks):
+            task_id = str(uuid.uuid4())
+            tasks.append(PlannedTask(
+                id=task_id,
+                title=t_task.get("title", f"Task {i+1}"),
+                description=t_task.get("description", ""),
+                worker_role=t_task.get("worker_role", "coder"),
+                priority=t_task.get("priority", 10 - i),
+                dependencies=[],  # Will be resolved later
+                estimated_duration=t_task.get("duration", "medium"),
+                validation_required=True
+            ))
+
+        return tasks
+
+    def set_skills_engine(self, skills_engine) -> None:
+        """Set the skills engine for task planning."""
+        self.skills_engine = skills_engine
+        logger.info("Skills engine connected to task planner")
+
+    def set_template_extractor(self, template_extractor) -> None:
+        """Set the template extractor for task planning."""
+        self.template_extractor = template_extractor
+        logger.info("Template extractor connected to task planner")

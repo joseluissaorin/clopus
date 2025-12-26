@@ -1,6 +1,6 @@
 ---
 name: docker-containerization
-description: Docker containerization and orchestration
+description: Docker containerization, Dockerfile creation, and Docker Compose orchestration. Use when containerizing applications, creating multi-stage builds, setting up development environments, or deploying with docker-compose. Covers Dockerfile best practices, multi-service orchestration, volumes, networks, and production optimization.
 version: 1.0.0
 author: CLOPUS
 model: claude-sonnet-4-20250514

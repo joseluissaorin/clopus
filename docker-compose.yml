@@ -23,7 +23,7 @@ x-worker-common: &worker-common
     - ./skills:/app/skills:ro
     - ./workers/system-prompts:/app/system-prompts:ro
     - ./workers/hooks:/app/hooks:ro
-    - ./mcp-servers:/app/mcp-servers:ro
+    - mcp-servers:/app/mcp-servers:ro
     - ./workers/.mcp.json:/workspace/.mcp.json:ro
   environment:
     <<: *common-env
@@ -45,11 +45,25 @@ x-worker-common: &worker-common
     - chromadb
     - redis
     - browser
+    - mcp-builder
   networks:
     - clopus-network
   restart: unless-stopped
 
 services:
+  # ===========================================================================
+  # MCP SERVERS BUILDER
+  # ===========================================================================
+  mcp-builder:
+    build:
+      context: .
+      dockerfile: Dockerfile.mcp-servers
+    container_name: clopus-mcp-builder
+    volumes:
+      - mcp-servers:/app/mcp-servers
+    networks:
+      - clopus-network
+
   # ===========================================================================
   # ORCHESTRATOR
   # ===========================================================================
@@ -461,6 +475,9 @@ volumes:
       o: bind
       device: ${PWD}/ipc
   anthropic-session:
+
+  # MCP Servers (built by mcp-builder)
+  mcp-servers:
 
   # Browser
   browser-profiles:

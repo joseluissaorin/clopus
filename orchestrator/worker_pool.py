@@ -33,6 +33,9 @@ class WorkerPool:
         self.workers: Dict[int, Dict] = {}
         self._running = False
 
+        # Skills engine for enhanced prompts (set by orchestrator)
+        self.skills_engine = None
+
     async def initialize(self) -> None:
         """Initialize worker pool."""
         logger.info(f"Initializing worker pool with {self.config.count} workers")
@@ -79,7 +82,9 @@ class WorkerPool:
         task_id: str,
         title: str,
         description: Optional[str] = None,
-        cwd: str = "/workspace"
+        cwd: str = "/workspace",
+        relevant_skills: Optional[List[Dict]] = None,
+        memory_context: Optional[str] = None
     ) -> bool:
         """Dispatch a task to a worker."""
         if worker_id not in self.workers:
@@ -92,8 +97,14 @@ class WorkerPool:
             logger.warning(f"Worker {worker_id} is not idle (status: {worker['status']})")
             return False
 
-        # Build prompt for Claude Code
-        prompt = self._build_task_prompt(title, description, worker["role"])
+        # Build prompt for Claude Code with skill and memory context
+        prompt = await self._build_task_prompt(
+            title,
+            description,
+            worker["role"],
+            relevant_skills,
+            memory_context
+        )
 
         # Create task file
         task_data = {
@@ -113,8 +124,15 @@ class WorkerPool:
         logger.info(f"Dispatched task {task_id} to worker {worker_id}")
         return True
 
-    def _build_task_prompt(self, title: str, description: Optional[str], role: str) -> str:
-        """Build a prompt for Claude Code."""
+    async def _build_task_prompt(
+        self,
+        title: str,
+        description: Optional[str],
+        role: str,
+        relevant_skills: Optional[List[Dict]] = None,
+        memory_context: Optional[str] = None
+    ) -> str:
+        """Build a prompt for Claude Code with skill and memory context."""
         role_instructions = {
             "coder": "You are implementing code. Focus on clean, working code that follows best practices.",
             "tester": "You are writing tests. Ensure comprehensive coverage and edge case handling.",
@@ -139,17 +157,51 @@ class WorkerPool:
                 "",
             ])
 
+        # =====================================================================
+        # HINT AT RELEVANT SKILLS (Native Claude Code Discovery)
+        # =====================================================================
+        # Claude Code auto-discovers skills from ~/.claude/skills/
+        # We just hint at which skills may be useful - Claude loads them on-demand
+        # This is more efficient than injecting full skill content
+        if relevant_skills:
+            skill_names = [s.get("name", "") for s in relevant_skills[:5] if s.get("name")]
+            if skill_names:
+                prompt_parts.extend([
+                    "## Relevant Skills Available",
+                    "The following skills are available and may help with this task:",
+                    ", ".join(skill_names),
+                    "",
+                    "Claude Code will automatically load these skills when needed.",
+                    ""
+                ])
+
+        # =====================================================================
+        # ADD MEMORY CONTEXT (PAST LEARNINGS)
+        # =====================================================================
+        if memory_context:
+            prompt_parts.extend([
+                "## Relevant Context from Past Projects",
+                memory_context[:1000],  # Truncate to 1000 chars
+                ""
+            ])
+
         prompt_parts.extend([
             "## Requirements",
             "- Complete the task fully",
-            "- Ensure code passes linting",
+            "- Ensure code passes linting and validation",
             "- Write clean, readable code",
             "- Handle errors appropriately",
+            "- Code will be validated by an 8-stage pipeline",
             "",
             "Begin working on this task now."
         ])
 
         return "\n".join(prompt_parts)
+
+    def set_skills_engine(self, skills_engine) -> None:
+        """Set the skills engine for enhanced prompts."""
+        self.skills_engine = skills_engine
+        logger.info("Skills engine connected to worker pool")
 
     async def collect_results(self) -> Dict[int, Dict]:
         """Collect completed task results from workers."""

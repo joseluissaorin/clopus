@@ -364,3 +364,158 @@ class ConfidenceEngine:
             "adjustments": self._weight_adjustments,
             "decisions_recorded": len(self._decision_history)
         }
+
+    # =========================================================================
+    # OUTCOME TRACKING (Architecture: Decision Learning)
+    # =========================================================================
+
+    async def record_outcome(
+        self,
+        decision_id: str,
+        outcome: Dict,
+        success: bool
+    ) -> None:
+        """
+        Record the outcome of a decision (Architecture: record_outcome).
+        Alias for learn_from_outcome with additional metadata.
+        """
+        # Store detailed outcome
+        await self.memory.log_activity(
+            source="confidence_engine",
+            action="outcome_recorded",
+            details={
+                "decision_id": decision_id,
+                "success": success,
+                "outcome": outcome
+            }
+        )
+
+        # Learn from outcome
+        await self.learn_from_outcome(decision_id, success)
+
+        # Store in long-term memory for pattern recognition
+        decision = next(
+            (d for d in self._decision_history if d["id"] == decision_id),
+            None
+        )
+
+        if decision:
+            memory_content = f"Decision outcome: {decision['type']} - {'SUCCESS' if success else 'FAILURE'}"
+            await self.memory.long_term.store(
+                memory_type="decision",
+                content=memory_content,
+                metadata={
+                    "decision_id": decision_id,
+                    "decision_type": decision["type"],
+                    "confidence": decision["confidence"],
+                    "outcome": "success" if success else "failure",
+                    "was_autonomous": decision["confidence"] >= self.threshold
+                }
+            )
+
+    async def record_task_outcome(
+        self,
+        task_id: str,
+        task_type: str,
+        success: bool,
+        validation_passed: bool,
+        error: Optional[str] = None
+    ) -> None:
+        """Record task completion outcome for learning."""
+        # Find related decision
+        decision = next(
+            (d for d in self._decision_history
+             if d.get("context", {}).get("task_id") == task_id),
+            None
+        )
+
+        if decision:
+            await self.record_outcome(
+                decision_id=decision["id"],
+                outcome={
+                    "task_id": task_id,
+                    "validation_passed": validation_passed,
+                    "error": error
+                },
+                success=success and validation_passed
+            )
+        else:
+            # No decision recorded, but still learn from pattern
+            pattern_key = f"task_type:{task_type}"
+
+            if not success or not validation_passed:
+                # Lower confidence for similar tasks in future
+                self._weight_adjustments[pattern_key] = (
+                    self._weight_adjustments.get(pattern_key, 0) - self.learning_rate
+                )
+                logger.info(f"Learned from failure pattern: {pattern_key}")
+            else:
+                # Increase confidence for similar tasks
+                self._weight_adjustments[pattern_key] = (
+                    self._weight_adjustments.get(pattern_key, 0) + self.learning_rate * 0.5
+                )
+
+    async def update_confidence_weights(self, decision: Dict) -> None:
+        """
+        Adjust confidence calculation based on outcomes.
+        (Architecture: update_confidence_weights)
+        """
+        similar_decisions = await self.memory.long_term.search(
+            query=f"decision {decision.get('type', '')}",
+            n_results=10
+        )
+
+        if not similar_decisions:
+            return
+
+        # Calculate success rate for similar decisions
+        successes = sum(
+            1 for d in similar_decisions
+            if d.metadata.get("outcome") == "success"
+        )
+        total = len(similar_decisions)
+
+        if total < 3:
+            return  # Not enough data
+
+        success_rate = successes / total
+
+        # Adjust weights based on success rate
+        if success_rate < 0.5:
+            # Lower confidence for this type of decision
+            pattern = f"decision_type:{decision.get('type', 'unknown')}"
+            self._weight_adjustments[pattern] = -0.1
+            logger.info(f"Lowered confidence for pattern: {pattern} (success rate: {success_rate:.0%})")
+        elif success_rate > 0.8:
+            # Increase confidence for this type
+            pattern = f"decision_type:{decision.get('type', 'unknown')}"
+            self._weight_adjustments[pattern] = 0.1
+            logger.info(f"Increased confidence for pattern: {pattern} (success rate: {success_rate:.0%})")
+
+    async def learn_preference(
+        self,
+        context: Dict,
+        user_choice: str
+    ) -> None:
+        """
+        Learn from user correction/preference.
+        (Architecture: learn_preference)
+        """
+        # Store user preference pattern
+        await self.memory.long_term.store(
+            memory_type="preference",
+            content=f"User preferred: {user_choice}",
+            metadata={
+                "context_summary": str(context)[:500],
+                "user_choice": user_choice,
+                "learned_at": "now"
+            }
+        )
+
+        # Reduce confidence for similar contexts where we suggested differently
+        pattern_key = f"preference:{context.get('decision_type', 'unknown')}"
+        self._weight_adjustments[pattern_key] = (
+            self._weight_adjustments.get(pattern_key, 0) - self.learning_rate
+        )
+
+        logger.info(f"Learned user preference for {pattern_key}: {user_choice}")

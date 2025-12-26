@@ -96,6 +96,9 @@ class TemplateExtractor:
             template_dir, template_name, description, project_info
         )
 
+        # Create hooks directory with default scripts
+        await self._create_hooks_directory(template_dir)
+
         # Store in memory
         await self.memory.long_term.store(
             memory_type="template",
@@ -356,6 +359,10 @@ Extracted by CLOPUS on {datetime.now().strftime("%Y-%m-%d")}
 
         return templates
 
+    async def list_templates(self) -> List[Dict]:
+        """Alias for discover_templates."""
+        return await self.discover_templates()
+
     def _load_template_info(self, template_dir: Path) -> Optional[Dict]:
         """Load template info from directory."""
         manifest_file = template_dir / "template.json"
@@ -419,5 +426,135 @@ Extracted by CLOPUS on {datetime.now().strftime("%Y-%m-%d")}
                 except UnicodeDecodeError:
                     shutil.copy2(item, dest_item)
 
+        # Run post-create hook if exists
+        await self._run_hook(template_dir, "post-create", dest_path, parameters)
+
         logger.info(f"Applied template {template_name} to {dest_path}")
         return True
+
+    # =========================================================================
+    # TEMPLATE HOOKS (Architecture: post-create, validate)
+    # =========================================================================
+
+    async def _run_hook(
+        self,
+        template_dir: Path,
+        hook_name: str,
+        project_path: str,
+        parameters: Dict[str, str]
+    ) -> bool:
+        """Run a template hook script."""
+        import subprocess
+        import os
+
+        hooks_dir = template_dir / "hooks"
+        hook_script = hooks_dir / f"{hook_name}.sh"
+
+        if not hook_script.exists():
+            return True  # No hook, that's fine
+
+        logger.info(f"Running template hook: {hook_name}")
+
+        try:
+            # Set environment variables from parameters
+            env = os.environ.copy()
+            for key, value in parameters.items():
+                env[f"TEMPLATE_{key.upper()}"] = value
+            env["PROJECT_PATH"] = project_path
+
+            result = await asyncio.to_thread(
+                subprocess.run,
+                ["bash", str(hook_script)],
+                cwd=project_path,
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=120
+            )
+
+            if result.returncode == 0:
+                logger.info(f"Hook {hook_name} completed successfully")
+                return True
+            else:
+                logger.warning(f"Hook {hook_name} failed: {result.stderr}")
+                return False
+
+        except Exception as e:
+            logger.error(f"Error running hook {hook_name}: {e}")
+            return False
+
+    async def validate_template(self, template_name: str) -> bool:
+        """Validate a template by running its validate hook."""
+        # Find template
+        template_dir = None
+        for search_path in [self.core_path, self.extracted_path]:
+            candidate = search_path / template_name
+            if candidate.exists():
+                template_dir = candidate
+                break
+
+        if not template_dir:
+            return False
+
+        # Check for validate hook
+        validate_hook = template_dir / "hooks" / "validate.sh"
+        if not validate_hook.exists():
+            return True  # No validation, assume valid
+
+        return await self._run_hook(template_dir, "validate", str(template_dir), {})
+
+    async def _create_hooks_directory(self, template_dir: Path) -> None:
+        """Create hooks directory with default scripts."""
+        hooks_dir = template_dir / "hooks"
+        hooks_dir.mkdir(parents=True, exist_ok=True)
+
+        # Create post-create.sh
+        post_create = hooks_dir / "post-create.sh"
+        post_create.write_text('''#!/bin/bash
+# Post-create hook - runs after template is applied
+# Available environment variables:
+#   PROJECT_PATH - path to the new project
+#   TEMPLATE_* - template parameters (e.g., TEMPLATE_PROJECT_NAME)
+
+set -e
+
+echo "Running post-create hook for $TEMPLATE_PROJECT_NAME"
+
+# Install dependencies if package.json exists
+if [ -f "$PROJECT_PATH/package.json" ]; then
+    cd "$PROJECT_PATH"
+    npm install
+fi
+
+# Install Python dependencies if requirements.txt exists
+if [ -f "$PROJECT_PATH/requirements.txt" ]; then
+    cd "$PROJECT_PATH"
+    pip install -r requirements.txt
+fi
+
+echo "Post-create hook completed"
+''')
+        post_create.chmod(0o755)
+
+        # Create validate.sh
+        validate = hooks_dir / "validate.sh"
+        validate.write_text('''#!/bin/bash
+# Validate hook - checks if template can generate working projects
+# Run from template directory
+
+set -e
+
+echo "Validating template..."
+
+# Check required files exist
+required_files=("template.json" "TEMPLATE.md")
+for file in "${required_files[@]}"; do
+    if [ ! -f "$file" ]; then
+        echo "Missing required file: $file"
+        exit 1
+    fi
+done
+
+echo "Template validation passed"
+''')
+        validate.chmod(0o755)
