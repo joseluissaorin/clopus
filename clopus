@@ -127,6 +127,54 @@ cmd_start() {
         exit 1
     fi
 
+    # Test Claude authentication
+    auth_mode=$(grep "^AUTH_MODE=" "$SCRIPT_DIR/.env" 2>/dev/null | cut -d'=' -f2)
+    log_info "Testing Claude authentication (${auth_mode} mode)..."
+
+    if [ "$auth_mode" = "oauth" ]; then
+        if ! command -v claude &>/dev/null; then
+            log_error "Claude Code CLI not found. Install with: npm install -g @anthropic-ai/claude-code"
+            exit 1
+        fi
+
+        # Test with a simple prompt
+        log_info "Sending test message to Claude..."
+        test_response=$(timeout 30 claude -p "Reply with only the word CLOPUS" --no-stream 2>&1)
+
+        if echo "$test_response" | grep -qi "CLOPUS"; then
+            log_success "Claude authentication verified!"
+        else
+            log_error "Claude test failed. Response: $test_response"
+            log_error "Run 'claude login' to authenticate."
+            exit 1
+        fi
+    elif [ "$auth_mode" = "api" ]; then
+        api_key=$(grep "^ANTHROPIC_API_KEY=" "$SCRIPT_DIR/.env" 2>/dev/null | cut -d'=' -f2)
+        if [ -z "$api_key" ]; then
+            log_error "No API key found in .env. Add ANTHROPIC_API_KEY=sk-ant-..."
+            exit 1
+        fi
+
+        # Test API key with a simple curl request
+        log_info "Testing API key..."
+        test_response=$(curl -s -w "\n%{http_code}" -X POST "https://api.anthropic.com/v1/messages" \
+            -H "Content-Type: application/json" \
+            -H "x-api-key: $api_key" \
+            -H "anthropic-version: 2023-06-01" \
+            -d '{"model":"claude-sonnet-4-20250514","max_tokens":10,"messages":[{"role":"user","content":"Reply with only: CLOPUS"}]}' 2>&1)
+
+        http_code=$(echo "$test_response" | tail -1)
+        if [ "$http_code" = "200" ]; then
+            log_success "API key verified!"
+        else
+            log_error "API test failed (HTTP $http_code). Check your ANTHROPIC_API_KEY."
+            exit 1
+        fi
+    else
+        log_error "Invalid AUTH_MODE in .env. Use 'oauth' or 'api'."
+        exit 1
+    fi
+
     # Build base image first
     log_info "Building base image..."
     docker build -t clopus-base:latest -f "$SCRIPT_DIR/Dockerfile.base" "$SCRIPT_DIR"
