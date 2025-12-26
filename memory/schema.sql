@@ -19,8 +19,8 @@ CREATE TABLE IF NOT EXISTS objectives (
     metadata JSON
 );
 
-CREATE INDEX idx_objectives_status ON objectives(status);
-CREATE INDEX idx_objectives_priority ON objectives(priority DESC);
+CREATE INDEX IF NOT EXISTS idx_objectives_status ON objectives(status);
+CREATE INDEX IF NOT EXISTS idx_objectives_priority ON objectives(priority DESC);
 
 -- =============================================================================
 -- TASKS
@@ -48,10 +48,10 @@ CREATE TABLE IF NOT EXISTS tasks (
     FOREIGN KEY (parent_task_id) REFERENCES tasks(id) ON DELETE SET NULL
 );
 
-CREATE INDEX idx_tasks_objective ON tasks(objective_id);
-CREATE INDEX idx_tasks_status ON tasks(status);
-CREATE INDEX idx_tasks_worker ON tasks(worker_id);
-CREATE INDEX idx_tasks_parent ON tasks(parent_task_id);
+CREATE INDEX IF NOT EXISTS idx_tasks_objective ON tasks(objective_id);
+CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
+CREATE INDEX IF NOT EXISTS idx_tasks_worker ON tasks(worker_id);
+CREATE INDEX IF NOT EXISTS idx_tasks_parent ON tasks(parent_task_id);
 
 -- =============================================================================
 -- WORKERS
@@ -86,8 +86,8 @@ CREATE TABLE IF NOT EXISTS validation_results (
     FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
 );
 
-CREATE INDEX idx_validation_task ON validation_results(task_id);
-CREATE INDEX idx_validation_stage ON validation_results(stage);
+CREATE INDEX IF NOT EXISTS idx_validation_task ON validation_results(task_id);
+CREATE INDEX IF NOT EXISTS idx_validation_stage ON validation_results(stage);
 
 -- =============================================================================
 -- QUESTIONS (User Interaction)
@@ -107,7 +107,7 @@ CREATE TABLE IF NOT EXISTS questions (
     FOREIGN KEY (objective_id) REFERENCES objectives(id) ON DELETE SET NULL
 );
 
-CREATE INDEX idx_questions_status ON questions(status);
+CREATE INDEX IF NOT EXISTS idx_questions_status ON questions(status);
 
 -- =============================================================================
 -- DECISIONS (Confidence Tracking)
@@ -126,8 +126,8 @@ CREATE TABLE IF NOT EXISTS decisions (
     FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE SET NULL
 );
 
-CREATE INDEX idx_decisions_type ON decisions(decision_type);
-CREATE INDEX idx_decisions_confidence ON decisions(confidence_score);
+CREATE INDEX IF NOT EXISTS idx_decisions_type ON decisions(decision_type);
+CREATE INDEX IF NOT EXISTS idx_decisions_confidence ON decisions(confidence_score);
 
 -- =============================================================================
 -- PROJECTS
@@ -146,7 +146,7 @@ CREATE TABLE IF NOT EXISTS projects (
     FOREIGN KEY (objective_id) REFERENCES objectives(id) ON DELETE CASCADE
 );
 
-CREATE INDEX idx_projects_status ON projects(status);
+CREATE INDEX IF NOT EXISTS idx_projects_status ON projects(status);
 
 -- =============================================================================
 -- GENERATED ASSETS
@@ -166,8 +166,8 @@ CREATE TABLE IF NOT EXISTS generated_assets (
     FOREIGN KEY (source_project_id) REFERENCES projects(id) ON DELETE SET NULL
 );
 
-CREATE INDEX idx_assets_type ON generated_assets(asset_type);
-CREATE INDEX idx_assets_synced ON generated_assets(github_synced);
+CREATE INDEX IF NOT EXISTS idx_assets_type ON generated_assets(asset_type);
+CREATE INDEX IF NOT EXISTS idx_assets_synced ON generated_assets(github_synced);
 
 -- =============================================================================
 -- SERVICE INSTANCES (On-Demand Services)
@@ -184,8 +184,8 @@ CREATE TABLE IF NOT EXISTS service_instances (
     FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE SET NULL
 );
 
-CREATE INDEX idx_services_status ON service_instances(status);
-CREATE INDEX idx_services_project ON service_instances(project_id);
+CREATE INDEX IF NOT EXISTS idx_services_status ON service_instances(status);
+CREATE INDEX IF NOT EXISTS idx_services_project ON service_instances(project_id);
 
 -- =============================================================================
 -- SESSION STATE
@@ -211,9 +211,9 @@ CREATE TABLE IF NOT EXISTS activity_log (
     worker_id INTEGER
 );
 
-CREATE INDEX idx_activity_timestamp ON activity_log(timestamp DESC);
-CREATE INDEX idx_activity_level ON activity_log(level);
-CREATE INDEX idx_activity_source ON activity_log(source);
+CREATE INDEX IF NOT EXISTS idx_activity_timestamp ON activity_log(timestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_activity_level ON activity_log(level);
+CREATE INDEX IF NOT EXISTS idx_activity_source ON activity_log(source);
 
 -- =============================================================================
 -- VIEWS

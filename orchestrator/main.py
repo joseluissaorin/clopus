@@ -57,9 +57,9 @@ class Orchestrator:
 
         # Initialize memory
         self.memory = MemoryClient(
-            sqlite_path=self.settings.memory.sqlite_path,
-            chromadb_host=self.settings.memory.chromadb_host,
-            chromadb_port=self.settings.memory.chromadb_port
+            sqlite_path=self.settings.memory_config.sqlite_path,
+            chromadb_host=self.settings.memory_config.chromadb_host,
+            chromadb_port=self.settings.memory_config.chromadb_port
         )
         await self.memory.initialize()
         logger.info("Memory system initialized")
@@ -67,7 +67,7 @@ class Orchestrator:
         # Initialize confidence engine
         self.confidence_engine = ConfidenceEngine(
             self.memory,
-            self.settings.confidence
+            self.settings.confidence_config
         )
         logger.info("Confidence engine initialized")
 
@@ -86,7 +86,7 @@ class Orchestrator:
         # Initialize worker pool
         self.worker_pool = WorkerPool(
             self.memory,
-            self.settings.workers,
+            self.settings.worker_config,
             self.settings.ipc_path
         )
         await self.worker_pool.initialize()
@@ -103,14 +103,14 @@ class Orchestrator:
         self.user_interaction = UserInteractionHandler(
             self.memory,
             self.confidence_engine,
-            Path(self.settings.interface.questions_dir),
-            Path(self.settings.interface.answers_dir)
+            Path(self.settings.interface_config.questions_dir),
+            Path(self.settings.interface_config.answers_dir)
         )
         logger.info("User interaction handler initialized")
 
         # Initialize GitHub sync
         self.github_sync = GitHubSync(
-            self.settings.github,
+            self.settings.github_config,
             Path(self.settings.skills_path),
             Path(self.settings.templates_path),
             Path(self.settings.mcp_servers_path)
@@ -118,7 +118,7 @@ class Orchestrator:
         logger.info("GitHub sync initialized")
 
         # Initialize service manager
-        self.service_manager = ServiceManager(self.settings.services)
+        self.service_manager = ServiceManager(self.settings.services_config)
         logger.info("Service manager initialized")
 
         logger.info("CLOPUS orchestrator fully initialized")
@@ -222,7 +222,7 @@ class Orchestrator:
                 }
             )
 
-            if confidence < self.settings.confidence.threshold:
+            if confidence < self.settings.confidence_config.threshold:
                 # Ask for clarification
                 await self.user_interaction.ask_clarification(
                     f"I need clarification on this objective: {objective.content}\n\nSpecifically: {parsed.get('unclear_points', 'general scope')}",
@@ -280,7 +280,7 @@ class Orchestrator:
 
     async def _objective_watcher(self) -> None:
         """Watch for new objectives from file system."""
-        objectives_dir = Path(self.settings.interface.objectives_dir)
+        objectives_dir = Path(self.settings.interface_config.objectives_dir)
         objectives_dir.mkdir(parents=True, exist_ok=True)
 
         processed = set()
@@ -318,7 +318,7 @@ class Orchestrator:
 
     async def _answer_watcher(self) -> None:
         """Watch for answers from file system."""
-        answers_dir = Path(self.settings.interface.answers_dir)
+        answers_dir = Path(self.settings.interface_config.answers_dir)
         answers_dir.mkdir(parents=True, exist_ok=True)
 
         processed = set()

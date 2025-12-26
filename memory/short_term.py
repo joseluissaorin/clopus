@@ -8,6 +8,7 @@ Handles tasks, workers, objectives, validation results, and session data.
 
 import asyncio
 import aiosqlite
+import sqlite3
 import json
 import uuid
 from datetime import datetime
@@ -117,17 +118,17 @@ class ShortTermMemory:
     async def initialize(self) -> None:
         """Initialize database with schema."""
         schema_path = Path(__file__).parent / "schema.sql"
-        async with self._get_connection() as conn:
-            with open(schema_path, "r") as f:
-                await conn.executescript(f.read())
-            await conn.commit()
+        conn = await self._get_connection()
+        with open(schema_path, "r") as f:
+            await conn.executescript(f.read())
+        await conn.commit()
 
     async def _get_connection(self) -> aiosqlite.Connection:
         """Get or create database connection."""
         if self._connection is None:
             self._connection = await aiosqlite.connect(
                 self.db_path,
-                detect_types=aiosqlite.PARSE_DECLTYPES | aiosqlite.PARSE_COLNAMES
+                detect_types=sqlite3.PARSE_DECLTYPES | sqlite3.PARSE_COLNAMES
             )
             self._connection.row_factory = aiosqlite.Row
         return self._connection

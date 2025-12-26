@@ -3,8 +3,6 @@
 # =============================================================================
 # Full system orchestration with all services
 
-version: '3.8'
-
 x-common-env: &common-env
   AUTH_MODE: ${AUTH_MODE:-oauth}
   CLAUDE_OAUTH_TOKEN: ${CLAUDE_OAUTH_TOKEN:-}
@@ -164,7 +162,7 @@ services:
       - clopus-network
     restart: unless-stopped
 
-  # MinIO (S3-compatible storage)
+  # MinIO (S3-compatible storage) - using alternative ports to avoid conflicts
   minio:
     image: minio/minio:latest
     container_name: clopus-minio
@@ -175,8 +173,8 @@ services:
       MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-minioadmin}
     command: server /data --console-address ":9001"
     ports:
-      - "9000:9000"
-      - "9001:9001"
+      - "9480:9000"  # API (alternative to avoid conflicts)
+      - "9481:9001"  # Console (alternative to avoid conflicts)
     networks:
       - clopus-network
     restart: unless-stopped
@@ -191,12 +189,12 @@ services:
       IS_PERSISTENT: "TRUE"
       ANONYMIZED_TELEMETRY: "FALSE"
     ports:
-      - "8000:8000"
+      - "8100:8000"
     networks:
       - clopus-network
     restart: unless-stopped
 
-  # Browser Container
+  # Browser Container - using alternative ports to avoid conflicts
   browser:
     build:
       context: .
@@ -211,14 +209,14 @@ services:
       SCREEN_HEIGHT: 1080
       SCREEN_DEPTH: 24
     ports:
-      - "6080:6080"  # noVNC web interface
-      - "5900:5900"  # VNC
+      - "6180:6080"  # noVNC web interface (alternative)
+      - "5910:5900"  # VNC (alternative)
     shm_size: '2gb'
     networks:
       - clopus-network
     restart: unless-stopped
 
-  # Traefik (Reverse Proxy)
+  # Traefik (Reverse Proxy) - using alternative ports to avoid conflicts
   traefik:
     image: traefik:v3.0
     container_name: clopus-traefik
@@ -229,9 +227,9 @@ services:
       - "--entrypoints.web.address=:80"
       - "--entrypoints.websecure.address=:443"
     ports:
-      - "80:80"
-      - "443:443"
-      - "8080:8080"  # Traefik dashboard
+      - "9280:80"    # HTTP (alternative to avoid conflicts)
+      - "9283:443"   # HTTPS (alternative to avoid conflicts)
+      - "9281:8080"  # Traefik dashboard
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
     networks:
@@ -441,6 +439,7 @@ volumes:
       o: bind
       device: ${HOME}/.claude
   ipc:
+  anthropic-session:
 
   # Browser
   browser-profiles:

@@ -423,6 +423,29 @@ class MemoryClient:
         return await self.short_term.get_state(key, default)
 
     # =========================================================================
+    # ACTIVITY LOGGING
+    # =========================================================================
+
+    async def log_activity(
+        self,
+        source: str,
+        action: str,
+        details: Optional[Dict] = None,
+        objective_id: Optional[str] = None,
+        task_id: Optional[str] = None,
+        worker_id: Optional[int] = None
+    ) -> None:
+        """Log an activity to short-term memory."""
+        await self.short_term.log_activity(
+            source=source,
+            action=action,
+            details=details,
+            objective_id=objective_id,
+            task_id=task_id,
+            worker_id=worker_id
+        )
+
+    # =========================================================================
     # STATISTICS
     # =========================================================================
 

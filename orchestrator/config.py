@@ -127,21 +127,39 @@ class Settings(BaseSettings):
     templates_path: str = "/app/templates"
     mcp_servers_path: str = "/app/mcp-servers"
 
+    # Service connection settings (from docker-compose environment)
+    postgres_host: str = "postgres"
+    postgres_port: int = 5432
+    postgres_user: str = "clopus"
+    postgres_password: str = "clopus"
+    postgres_db: str = "clopus"
+    redis_host: str = "redis"
+    redis_port: int = 6379
+    chromadb_host: str = "chromadb"
+    chromadb_port: int = 8000
+    minio_host: str = "minio"
+    minio_port: int = 9000
+    minio_access_key: str = "minioadmin"
+    minio_secret_key: str = "minioadmin"
+    vnc_port: int = 6080
+
     # Component configs (loaded from config.yaml)
-    workers: WorkerConfig = WorkerConfig()
-    memory: MemoryConfig = MemoryConfig()
-    validation: ValidationConfig = ValidationConfig()
-    confidence: ConfidenceConfig = ConfidenceConfig()
-    github: GitHubConfig = GitHubConfig()
-    services: ServicesConfig = ServicesConfig()
-    email: EmailConfig = EmailConfig()
-    interface: InterfaceConfig = InterfaceConfig()
+    # Using underscore prefix to avoid env var conflicts
+    worker_config: WorkerConfig = WorkerConfig()
+    memory_config: MemoryConfig = MemoryConfig()
+    validation_config: ValidationConfig = ValidationConfig()
+    confidence_config: ConfidenceConfig = ConfidenceConfig()
+    github_config: GitHubConfig = GitHubConfig()
+    services_config: ServicesConfig = ServicesConfig()
+    email_config: EmailConfig = EmailConfig()
+    interface_config: InterfaceConfig = InterfaceConfig()
 
     class Config:
         env_prefix = ""
         case_sensitive = False
         env_file = ".env"
         env_file_encoding = "utf-8"
+        extra = "ignore"
 
 
 def load_config(config_path: Optional[str] = None) -> Settings:
@@ -160,21 +178,21 @@ def load_config(config_path: Optional[str] = None) -> Settings:
         if config_data:
             # Update component configs from file
             if "workers" in config_data:
-                settings.workers = WorkerConfig(**config_data["workers"])
+                settings.worker_config = WorkerConfig(**config_data["workers"])
             if "memory" in config_data:
-                settings.memory = MemoryConfig(**config_data["memory"])
+                settings.memory_config = MemoryConfig(**config_data["memory"])
             if "validation" in config_data:
-                settings.validation = ValidationConfig(**config_data["validation"])
+                settings.validation_config = ValidationConfig(**config_data["validation"])
             if "confidence" in config_data:
-                settings.confidence = ConfidenceConfig(**config_data["confidence"])
+                settings.confidence_config = ConfidenceConfig(**config_data["confidence"])
             if "github" in config_data:
-                settings.github = GitHubConfig(**config_data["github"])
+                settings.github_config = GitHubConfig(**config_data["github"])
             if "services" in config_data:
-                settings.services = ServicesConfig(**config_data["services"])
+                settings.services_config = ServicesConfig(**config_data["services"])
             if "email" in config_data:
-                settings.email = EmailConfig(**config_data["email"])
+                settings.email_config = EmailConfig(**config_data["email"])
             if "interface" in config_data:
-                settings.interface = InterfaceConfig(**config_data["interface"])
+                settings.interface_config = InterfaceConfig(**config_data["interface"])
 
     return settings
 
