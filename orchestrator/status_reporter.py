@@ -81,7 +81,7 @@ class StatusReporter:
                     "id": o.id,
                     "summary": o.content[:100],
                     "status": o.status.value,
-                    "created_at": o.created_at.isoformat() if o.created_at else None
+                    "created_at": o.created_at.isoformat() if hasattr(o.created_at, 'isoformat') else o.created_at
                 }
                 for o in pending[:5]
             ]

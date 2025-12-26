@@ -292,9 +292,9 @@ class MemoryClient:
         """Get all pending questions."""
         return await self.short_term.get_pending_questions()
 
-    async def answer(self, question_id: str, answer: str) -> None:
-        """Record an answer to a question."""
-        await self.short_term.answer_question(question_id, answer)
+    async def answer(self, question_id: str, answer: str) -> Optional[str]:
+        """Record an answer to a question. Returns objective_id if re-queued."""
+        return await self.short_term.answer_question(question_id, answer)
 
     # =========================================================================
     # DECISION TRACKING

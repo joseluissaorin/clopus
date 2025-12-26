@@ -210,17 +210,37 @@ class Orchestrator:
             # Mark as in progress
             await self.memory.start_objective(objective.id)
 
-            # Parse objective
-            parsed = await self.objective_parser.parse(objective.content)
+            # Check for clarifications from previous questions
+            clarifications = []
+            if objective.metadata and "clarifications" in objective.metadata:
+                clarifications = objective.metadata["clarifications"]
+                logger.info(f"Found {len(clarifications)} clarification(s) for objective")
 
-            # Check confidence
+            # Build enhanced content with clarifications
+            content = objective.content
+            if clarifications:
+                clarification_text = "\n\n---\nUser Clarifications:\n"
+                for c in clarifications:
+                    clarification_text += f"- {c['answer']}\n"
+                content += clarification_text
+
+            # Parse objective (with clarifications if any)
+            parsed = await self.objective_parser.parse(content)
+
+            # Check confidence - higher if we have clarifications
             confidence = await self.confidence_engine.calculate(
                 "objective_clarity",
                 {
-                    "objective": objective.content,
-                    "parsed": parsed
+                    "objective": content,
+                    "parsed": parsed,
+                    "has_clarifications": len(clarifications) > 0
                 }
             )
+
+            # Boost confidence if we have clarifications
+            if clarifications:
+                confidence = min(1.0, confidence + 0.3)
+                logger.info(f"Boosted confidence to {confidence} due to clarifications")
 
             if confidence < self.settings.confidence_config.threshold:
                 # Ask for clarification
@@ -339,8 +359,11 @@ class Orchestrator:
 
                         if answer_text:
                             question_id = file.stem
-                            await self.memory.answer(question_id, answer_text)
+                            objective_id = await self.memory.answer(question_id, answer_text)
                             logger.info(f"Answer received for question: {question_id}")
+
+                            if objective_id:
+                                logger.info(f"Objective {objective_id} re-queued for processing with clarification")
 
                             # Remove answer file
                             file.unlink()

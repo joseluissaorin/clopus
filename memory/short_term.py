@@ -8,7 +8,6 @@ Handles tasks, workers, objectives, validation results, and session data.
 
 import asyncio
 import aiosqlite
-import sqlite3
 import json
 import uuid
 from datetime import datetime
@@ -126,10 +125,7 @@ class ShortTermMemory:
     async def _get_connection(self) -> aiosqlite.Connection:
         """Get or create database connection."""
         if self._connection is None:
-            self._connection = await aiosqlite.connect(
-                self.db_path,
-                detect_types=sqlite3.PARSE_DECLTYPES | sqlite3.PARSE_COLNAMES
-            )
+            self._connection = await aiosqlite.connect(self.db_path)
             self._connection.row_factory = aiosqlite.Row
         return self._connection
 
@@ -506,15 +502,67 @@ class ShortTermMemory:
             rows = await cursor.fetchall()
             return [dict(row) for row in rows]
 
-    async def answer_question(self, question_id: str, answer: str) -> None:
-        """Record answer to a question."""
+    async def answer_question(self, question_id: str, answer: str) -> Optional[str]:
+        """Record answer to a question and re-queue linked objective."""
         async with self._lock:
             conn = await self._get_connection()
+
+            # Get the question to find linked objective
+            async with conn.execute(
+                "SELECT objective_id FROM questions WHERE id = ?",
+                (question_id,)
+            ) as cursor:
+                row = await cursor.fetchone()
+                objective_id = row["objective_id"] if row else None
+
+            # Update question status
             await conn.execute(
                 "UPDATE questions SET status = 'answered', answer = ?, answered_at = ? WHERE id = ?",
                 (answer, datetime.now().isoformat(), question_id)
             )
+
+            # If linked to objective, re-queue it with clarification
+            if objective_id:
+                # Get current metadata
+                async with conn.execute(
+                    "SELECT metadata FROM objectives WHERE id = ?",
+                    (objective_id,)
+                ) as cursor:
+                    row = await cursor.fetchone()
+                    if not row:
+                        # Objective doesn't exist anymore
+                        await conn.commit()
+                        return None
+
+                    # Parse metadata safely
+                    metadata = {}
+                    if row["metadata"]:
+                        try:
+                            metadata = json.loads(row["metadata"])
+                            if metadata is None:
+                                metadata = {}
+                        except (json.JSONDecodeError, TypeError):
+                            metadata = {}
+
+                # Add clarification to metadata
+                if not isinstance(metadata, dict):
+                    metadata = {}
+                if "clarifications" not in metadata:
+                    metadata["clarifications"] = []
+                metadata["clarifications"].append({
+                    "question_id": question_id,
+                    "answer": answer,
+                    "answered_at": datetime.now().isoformat()
+                })
+
+                # Reset objective to pending for reprocessing
+                await conn.execute(
+                    "UPDATE objectives SET status = 'pending', metadata = ? WHERE id = ?",
+                    (json.dumps(metadata), objective_id)
+                )
+
             await conn.commit()
+            return objective_id
 
     # =========================================================================
     # DECISIONS

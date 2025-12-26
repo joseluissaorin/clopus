@@ -121,6 +121,13 @@ class LongTermMemory:
         metadata["created_at"] = datetime.now().isoformat()
         metadata["memory_type"] = memory_type.value
 
+        # Convert lists to comma-separated strings (ChromaDB only accepts primitives)
+        for key, value in list(metadata.items()):
+            if isinstance(value, list):
+                metadata[key] = ",".join(str(v) for v in value) if value else ""
+            elif value is None:
+                metadata[key] = ""
+
         # Generate embedding
         embedding = await self.embedding_engine.embed(content)
 

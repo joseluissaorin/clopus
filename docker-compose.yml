@@ -16,9 +16,9 @@ x-worker-common: &worker-common
     dockerfile: Dockerfile.worker
   volumes:
     - workspace:/workspace
-    - claude-auth:/root/.claude-host:ro
-    - gh-config:/root/.config/gh:ro
-    - ssh-keys:/root/.ssh:ro
+    - claude-auth:/home/ubuntu/.claude-host:ro
+    - gh-config:/home/ubuntu/.config/gh:ro
+    - ssh-keys:/home/ubuntu/.ssh:ro
     - ipc:/app/ipc
     - ./skills:/app/skills:ro
     - ./workers/system-prompts:/app/system-prompts:ro
@@ -439,6 +439,11 @@ volumes:
       o: bind
       device: ${HOME}/.claude
   ipc:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${PWD}/ipc
   anthropic-session:
 
   # Browser

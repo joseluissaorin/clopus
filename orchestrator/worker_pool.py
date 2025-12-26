@@ -9,7 +9,7 @@ Handles task dispatch, result collection, and worker health monitoring.
 import asyncio
 import json
 from pathlib import Path
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 import logging
 
@@ -197,11 +197,19 @@ class WorkerPool:
 
                     if updated_at:
                         last_update = datetime.fromisoformat(updated_at)
-                        if datetime.now() - last_update > timeout:
+                        # Ensure both datetimes are timezone-aware
+                        now = datetime.now(timezone.utc)
+                        if last_update.tzinfo is None:
+                            last_update = last_update.replace(tzinfo=timezone.utc)
+                        if now - last_update > timeout:
                             stale_workers.append(worker_id)
                             worker["status"] = "offline"
                         else:
                             worker["last_heartbeat"] = last_update
+                            # Reset to idle if worker was offline but is now responding
+                            if worker["status"] == "offline":
+                                worker["status"] = "idle"
+                                logger.info(f"Worker {worker_id} back online")
 
                 except (json.JSONDecodeError, ValueError) as e:
                     logger.warning(f"Error reading status for worker {worker_id}: {e}")
