@@ -1,29 +1,125 @@
-# CLOPUS v3
+<p align="center">
+  <h1 align="center">CLOPUS v3</h1>
+  <p align="center">
+    <strong>Autonomous Multi-Agent Claude Code System</strong>
+  </p>
+  <p align="center">
+    <a href="#quick-start">Quick Start</a> |
+    <a href="#features">Features</a> |
+    <a href="#architecture">Architecture</a> |
+    <a href="#documentation">Docs</a>
+  </p>
+</p>
 
-**Autonomous Multi-Agent Claude Code System**
+<p align="center">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License"></a>
+  <a href="https://github.com/joseluissaorin/clopus"><img src="https://img.shields.io/badge/python-3.11+-green.svg" alt="Python"></a>
+  <a href="https://github.com/joseluissaorin/clopus"><img src="https://img.shields.io/badge/docker-required-blue.svg" alt="Docker"></a>
+  <a href="https://claude.ai"><img src="https://img.shields.io/badge/powered%20by-Claude-orange.svg" alt="Claude"></a>
+</p>
 
-CLOPUS (Claude-based Locally Orchestrated Production Unified System) is a fully autonomous development system that orchestrates multiple Claude Code instances to build complete software projects with minimal human intervention.
+---
+
+**CLOPUS** (Claude-based Locally Orchestrated Production Unified System) is a fully autonomous development system that orchestrates multiple Claude Code instances to build complete software projects with minimal human intervention.
+
+Give it an objective like *"Build a todo app with React and FastAPI"* and watch as 5 specialized AI workers collaborate to design, implement, test, and validate production-ready code.
+
+## Table of Contents
+
+- [Why CLOPUS?](#why-clopus)
+- [Features](#features)
+- [Quick Start](#quick-start)
+- [Usage](#usage)
+- [Architecture](#architecture)
+- [Worker Roles](#worker-roles)
+- [Validation Pipeline](#validation-pipeline)
+- [Memory System](#memory-system)
+- [Self-Generating Ecosystem](#self-generating-ecosystem)
+- [MCP Servers](#mcp-servers)
+- [Skills](#skills)
+- [Templates](#templates)
+- [Configuration](#configuration)
+- [Monitoring](#monitoring)
+- [API Reference](#api-reference)
+- [Troubleshooting](#troubleshooting)
+- [Contributing](#contributing)
+- [Roadmap](#roadmap)
+- [License](#license)
+- [Acknowledgments](#acknowledgments)
+
+## Why CLOPUS?
+
+Traditional AI coding assistants require constant human guidance. CLOPUS takes a different approach:
+
+| Traditional AI Coding | CLOPUS |
+|----------------------|--------|
+| Single conversation context | Persistent memory across sessions |
+| One task at a time | 5 parallel specialized workers |
+| Manual testing | 8-stage automated validation |
+| No learning | Learns from every project |
+| Basic code generation | Full project scaffolding + deployment |
+| Asks for everything | Only asks when genuinely uncertain |
+
+### Key Differentiators
+
+- **True Autonomy**: Confidence-based decision making means CLOPUS only interrupts you when it genuinely needs guidance
+- **Self-Improvement**: Automatically extracts patterns, skills, and templates from completed work
+- **Production Quality**: 8-stage validation ensures generated code is production-ready
+- **Persistent Memory**: ChromaDB-powered semantic memory means CLOPUS remembers solutions and patterns
+- **Extensible**: MCP servers, skills, and templates can be added without code changes
 
 ## Features
 
-- **Multi-Agent Architecture**: 5 parallel Claude Code workers with specialized roles (Coder, Tester, Reviewer, Researcher, Debugger)
-- **Python Orchestrator**: Async orchestration with intelligent task planning and distribution
-- **Dual Memory System**: SQLite for short-term state, ChromaDB for long-term semantic memory
-- **Self-Generating Ecosystem**: Automatically creates skills, MCP servers, and templates from patterns
-- **8-Stage Validation Pipeline**: Syntax → Lint → Build → Unit Tests → Integration Tests → E2E Tests → Security → Code Review
-- **Confidence-Based Autonomy**: Only asks for human input when genuinely uncertain (threshold: 0.7)
-- **Browser Automation**: Dual support via MCP server (Playwright) and VNC container (Chromium)
-- **Universal Dev Tools**: Python, Node.js, Go, Rust, PHP, Ruby, cloud CLIs, and more
-- **GitHub Integration**: Auto-sync skills/templates/MCPs to shared repo, separate repos per project
+### Multi-Agent Architecture
+- **5 Parallel Workers**: Specialized roles (Coder, Tester, Reviewer, Researcher, Debugger) work concurrently
+- **Intelligent Task Distribution**: Orchestrator assigns tasks based on worker specialization and workload
+- **File-Based IPC**: Simple, debuggable communication via JSON files
+
+### Python Orchestrator
+- **Async Everything**: Built on asyncio for maximum concurrency
+- **Objective Parsing**: Natural language objectives parsed into structured tasks
+- **Confidence Engine**: Learns when to act autonomously vs. ask for help
+
+### Dual Memory System
+- **Short-Term (SQLite)**: Current objectives, tasks, worker states, validation results
+- **Long-Term (ChromaDB)**: Semantic search over patterns, solutions, errors, and decisions
+
+### Self-Generating Ecosystem
+- **Skills**: Automatically discovers and generates reusable skills from patterns
+- **MCP Servers**: Generates TypeScript MCP servers when new API access is needed
+- **Templates**: Extracts parameterized templates from completed projects
+
+### 8-Stage Validation Pipeline
+Every piece of generated code passes through:
+1. **Syntax Check** - Language-specific syntax validation
+2. **Lint** - ESLint, Pylint, Ruff, and more
+3. **Build** - Compilation and build verification
+4. **Unit Tests** - Jest, pytest, Go test
+5. **Integration Tests** - API and service integration
+6. **E2E Tests** - Playwright/Cypress browser tests
+7. **Security Scan** - npm audit, pip-audit, pattern detection
+8. **Code Review** - Automated review by Reviewer worker
+
+### Browser Automation
+- **MCP Server**: Playwright-based automation for reliable web interactions
+- **VNC Container**: Chromium with noVNC for visual debugging
+
+### Universal Dev Tools
+Pre-installed: Python, Node.js, Go, Rust, PHP, Ruby, cloud CLIs (AWS, GCP, Azure, Vercel, Railway, Fly.io), Docker, kubectl, terraform, and more.
+
+### GitHub Integration
+- **Auto-Sync**: Skills, templates, and MCP servers sync to shared repository
+- **Project Repos**: Each project gets its own GitHub repository
+- **PR Workflow**: Automated PR creation and branch management
 
 ## Quick Start
 
 ### Prerequisites
 
-- Docker & Docker Compose
-- Git
-- GitHub CLI (`gh`) authenticated
-- Anthropic API key or Claude Max subscription
+- **Docker & Docker Compose** (v2.0+)
+- **Git**
+- **GitHub CLI** (`gh`) - authenticated
+- **Anthropic API key** or **Claude Max/Pro subscription**
 
 ### Installation
 
@@ -32,7 +128,7 @@ CLOPUS (Claude-based Locally Orchestrated Production Unified System) is a fully 
 git clone https://github.com/joseluissaorin/clopus.git
 cd clopus
 
-# Run setup
+# Run setup (configures environment, builds containers)
 ./setup.sh
 
 # Start CLOPUS
@@ -45,51 +141,67 @@ cd clopus
 curl -fsSL https://raw.githubusercontent.com/joseluissaorin/clopus/main/install.sh | bash
 ```
 
-## Usage
-
-### Basic Commands
+### First Objective
 
 ```bash
-# Start the system
-./clopus start
+# Give CLOPUS its first task
+./clopus objective "Build a todo app with React frontend and FastAPI backend"
 
-# Stop the system
-./clopus stop
-
-# Check system status
+# Watch progress
 ./clopus status
 
-# Give an objective
-./clopus objective "Build a todo app with React and FastAPI backend"
-
-# View pending questions
+# Check if CLOPUS has questions
 ./clopus questions
 
-# Answer a question
+# Answer any questions
 ./clopus answer <question_id> "Your answer here"
+```
 
-# View worker status
-./clopus workers
+## Usage
 
-# View logs
-./clopus logs [service]
+### CLI Commands
 
-# List available skills
-./clopus skills
+```bash
+# Lifecycle
+./clopus start                  # Start all services
+./clopus stop                   # Stop all services
+./clopus restart                # Restart services
+./clopus status                 # Show system status
 
-# List available templates
-./clopus templates
+# Objectives
+./clopus objective "..."        # Submit a new objective
+./clopus objectives             # List all objectives
+./clopus cancel <id>            # Cancel an objective
 
-# Sync to GitHub
-./clopus sync
+# Questions & Answers
+./clopus questions              # List pending questions
+./clopus answer <id> "..."      # Answer a question
 
-# Login (configure API key or subscription)
-./clopus login
+# Workers
+./clopus workers                # Show worker status
+./clopus worker <id>            # Show specific worker details
+./clopus logs <service>         # View service logs
+
+# Skills & Templates
+./clopus skills                 # List available skills
+./clopus templates              # List available templates
+./clopus template use <name> <dest>  # Apply a template
+
+# GitHub
+./clopus sync                   # Sync to GitHub
+./clopus repos                  # List created repositories
+
+# Validation
+./clopus validate <path>        # Run validation on a project
+
+# Configuration
+./clopus login                  # Configure authentication
+./clopus config                 # View/edit configuration
 ```
 
 ### File-Based Interface
 
-You can also interact with CLOPUS via files:
+For automation or when CLI isn't available:
 
 ```bash
 # Submit an objective
@@ -101,8 +213,54 @@ cat ipc/interface/questions.json
 # Submit answers
 echo '{"question_id": "q123", "answer": "Use JWT for auth"}' > ipc/interface/answer.txt
 
-# View status
+# View current status
 cat ipc/interface/status.json
+```
+
+### Example Session
+
+```bash
+$ ./clopus start
+Starting CLOPUS v3...
+  [OK] ChromaDB
+  [OK] SQLite
+  [OK] Orchestrator
+  [OK] Worker 1 (Coder)
+  [OK] Worker 2 (Tester)
+  [OK] Worker 3 (Reviewer)
+  [OK] Worker 4 (Researcher)
+  [OK] Worker 5 (Debugger)
+System ready.
+
+$ ./clopus objective "Build a blog with Next.js, markdown support, and dark mode"
+Objective submitted: obj_a1b2c3d4
+Parsing objective...
+Detected: Next.js project with MDX support
+Planning 12 tasks across 5 workers...
+Started.
+
+$ ./clopus status
+Objective: Build a blog with Next.js...
+Progress: 7/12 tasks (58%)
+Workers:
+  - Coder: implementing dark mode toggle
+  - Tester: writing component tests
+  - Reviewer: reviewing navigation component
+  - Researcher: idle
+  - Debugger: idle
+Validation: 6 passed, 0 failed
+
+$ ./clopus questions
+No pending questions.
+
+# Later...
+$ ./clopus status
+Objective: Build a blog with Next.js...
+Progress: 12/12 tasks (100%)
+Validation: All 8 stages passed
+Repository: https://github.com/joseluissaorin/blog-nextjs
+
+Done! Project available at: /workspace/projects/blog-nextjs
 ```
 
 ## Architecture
@@ -128,6 +286,10 @@ cat ipc/interface/status.json
 │  │   Skills    │ │     MCP     │ │  Template   │               │
 │  │   Engine    │ │  Generator  │ │  Extractor  │               │
 │  └─────────────┘ └─────────────┘ └─────────────┘               │
+│  ┌─────────────┐ ┌─────────────┐ ┌─────────────┐               │
+│  │  Knowledge  │ │  Service    │ │ Capability  │               │
+│  │    Base     │ │   Manager   │ │  Installer  │               │
+│  └─────────────┘ └─────────────┘ └─────────────┘               │
 └─────────────────────────────────────────────────────────────────┘
                                 │
         ┌───────────────────────┼───────────────────────┐
@@ -135,255 +297,200 @@ cat ipc/interface/status.json
 ┌───────────────┐       ┌───────────────┐       ┌───────────────┐
 │   Worker 1    │       │   Worker 2    │       │   Worker 3    │
 │    (Coder)    │       │   (Tester)    │       │  (Reviewer)   │
+│  Claude Code  │       │  Claude Code  │       │  Claude Code  │
 └───────────────┘       └───────────────┘       └───────────────┘
         │                       │                       │
-        ▼                       ▼                       ▼
-┌───────────────┐       ┌───────────────┐       ┌───────────────┐
-│   Worker 4    │       │   Worker 5    │       │  Validation   │
-│ (Researcher)  │       │  (Debugger)   │       │   Pipeline    │
-└───────────────┘       └───────────────┘       └───────────────┘
+        └───────────────────────┼───────────────────────┘
+                                │
+                    ┌───────────┴───────────┐
+                    ▼                       ▼
+            ┌───────────────┐       ┌───────────────┐
+            │   Worker 4    │       │   Worker 5    │
+            │ (Researcher)  │       │  (Debugger)   │
+            │  Claude Code  │       │  Claude Code  │
+            └───────────────┘       └───────────────┘
                                 │
         ┌───────────────────────┼───────────────────────┐
         ▼                       ▼                       ▼
 ┌───────────────┐       ┌───────────────┐       ┌───────────────┐
 │    SQLite     │       │   ChromaDB    │       │  MCP Servers  │
-│ (Short-term)  │       │ (Long-term)   │       │  (Browser,    │
-│               │       │               │       │   Memory...)  │
+│ (Short-term)  │       │ (Long-term)   │       │  (10+ tools)  │
 └───────────────┘       └───────────────┘       └───────────────┘
 ```
 
+### Service Tiers
+
+**Tier 1 (Always Running)**:
+- Orchestrator
+- 5 Claude Code Workers
+- SQLite
+- ChromaDB
+
+**Tier 2 (On-Demand)**:
+- PostgreSQL
+- Redis
+- MinIO (S3)
+- Prometheus
+- Grafana
+- Browser (VNC)
+
+The Service Manager automatically provisions Tier 2 services when a project needs them.
+
 ## Worker Roles
 
-| Worker | Role | Responsibilities |
-|--------|------|------------------|
-| Worker 1 | **Coder** | Primary development, feature implementation |
-| Worker 2 | **Tester** | Write and run tests (unit, integration, E2E) |
-| Worker 3 | **Reviewer** | Code review, quality assurance, best practices |
-| Worker 4 | **Researcher** | Documentation, API research, solution discovery |
-| Worker 5 | **Debugger** | Bug fixing, performance optimization, troubleshooting |
+Each worker runs a full Claude Code instance with role-specific system prompts and skills:
+
+| Worker | Role | Specialization | Skills |
+|--------|------|----------------|--------|
+| Worker 1 | **Coder** | Primary development, feature implementation | react-typescript, python-fastapi, nextjs-fullstack |
+| Worker 2 | **Tester** | Write and run all test types | playwright-e2e, jest-unit, pytest-python |
+| Worker 3 | **Reviewer** | Code review, security, best practices | security-audit, code-review |
+| Worker 4 | **Researcher** | Documentation, API research, solutions | web-search, documentation-reader |
+| Worker 5 | **Debugger** | Bug fixing, performance, troubleshooting | debugging, performance-profiling |
+
+Workers communicate via file-based IPC:
+- `ipc/tasks/{worker_id}/pending.json` - Tasks for worker
+- `ipc/tasks/{worker_id}/status.json` - Worker status
+- `ipc/tasks/{worker_id}/result.json` - Task results
 
 ## Validation Pipeline
 
-All generated code passes through 8 validation stages:
+All generated code must pass 8 validation stages:
 
-1. **Syntax Check** - Language-specific syntax validation
-2. **Lint** - ESLint, Pylint, Ruff, and more
-3. **Build** - Compilation and build verification
-4. **Unit Tests** - Jest, pytest, Go test
-5. **Integration Tests** - API and service integration
-6. **E2E Tests** - Playwright/Cypress browser tests
-7. **Security Scan** - npm audit, pip-audit, pattern detection
-8. **Code Review** - Automated review by Reviewer worker
-
-## Memory System
-
-### Short-Term (SQLite)
-- Current objectives and tasks
-- Worker states and assignments
-- Validation results
-- Session state
-
-### Long-Term (ChromaDB)
-- Learned patterns and solutions
-- Project context and decisions
-- Error resolutions
-- Skill and template metadata
-
-## Self-Generating Ecosystem
-
-### Skills
-CLOPUS automatically discovers and generates skills:
-- Scans filesystem for SKILL.md files
-- Generates new skills from recurring patterns
-- Validates and tests generated skills
-- Syncs to GitHub repository
-
-### MCP Servers
-When external API access is needed:
-- Searches existing MCP servers
-- Researches API documentation
-- Generates TypeScript MCP server
-- Tests and validates
-- Syncs to GitHub
-
-### Templates
-After completing projects:
-- Analyzes project structure
-- Abstracts project-specific details
-- Creates parameterized templates
-- Validates template can regenerate original
-- Syncs to GitHub
-
-## Configuration
-
-### Environment Variables
-
-```bash
-# Required
-ANTHROPIC_API_KEY=sk-ant-...        # Or use Claude subscription
-GITHUB_TOKEN=ghp_...                 # For GitHub operations
-
-# Optional
-CLOPUS_WORKERS=5                     # Number of parallel workers
-CLOPUS_CONFIDENCE_THRESHOLD=0.7      # Autonomy threshold
-CLOPUS_VALIDATION_STRICT=true        # Require all stages to pass
-CLOPUS_PROJECT_DIR=/home/user/Dev    # Project output directory
-CLOPUS_LOG_LEVEL=INFO                # Logging level
-
-# Services
-POSTGRES_PASSWORD=clopus
-REDIS_PASSWORD=clopus
-MINIO_ROOT_USER=clopus
-MINIO_ROOT_PASSWORD=clopuspassword
-RESEND_API_KEY=re_...                # For email sending
+```
+┌──────────┐   ┌──────────┐   ┌──────────┐   ┌──────────┐
+│  Syntax  │ → │   Lint   │ → │  Build   │ → │  Unit    │
+│  Check   │   │          │   │          │   │  Tests   │
+└──────────┘   └──────────┘   └──────────┘   └──────────┘
+                                                   │
+                                                   ▼
+┌──────────┐   ┌──────────┐   ┌──────────┐   ┌──────────┐
+│   Code   │ ← │ Security │ ← │   E2E    │ ← │  Integ   │
+│  Review  │   │   Scan   │   │  Tests   │   │  Tests   │
+└──────────┘   └──────────┘   └──────────┘   └──────────┘
 ```
 
-### config.yaml
+### Stage Details
+
+| Stage | Tools | What It Checks |
+|-------|-------|----------------|
+| Syntax | Language parsers | Valid syntax for all files |
+| Lint | ESLint, Pylint, Ruff | Code style, common errors |
+| Build | npm, pip, cargo, go | Project compiles/builds |
+| Unit Tests | Jest, pytest, go test | Individual function behavior |
+| Integration Tests | Supertest, pytest | API and service integration |
+| E2E Tests | Playwright, Cypress | Full user flows in browser |
+| Security | npm audit, pip-audit, Semgrep | Vulnerabilities, secrets |
+| Code Review | Reviewer worker | Architecture, best practices |
+
+### Configuration
 
 ```yaml
-workers:
-  count: 5
-  heartbeat_interval: 30
-  task_timeout: 3600
-  roles:
-    - coder
-    - tester
-    - reviewer
-    - researcher
-    - debugger
-
-memory:
-  sqlite_path: ./data/clopus.db
-  chromadb_path: ./data/chromadb
-  embedding_model: all-MiniLM-L6-v2
-
 validation:
-  strict_mode: true
-  required_stages:
+  strict_mode: true          # All stages must pass
+  required_stages:           # Must pass
     - syntax
     - lint
     - build
     - unit_tests
-  optional_stages:
+  optional_stages:           # Can fail without blocking
     - integration_tests
     - e2e_tests
     - security
     - review
-
-confidence:
-  threshold: 0.7
-  factors:
-    task_complexity: 0.2
-    similar_past_success: 0.25
-    clear_requirements: 0.25
-    available_context: 0.15
-    domain_familiarity: 0.15
-
-github:
-  auto_sync: true
-  skills_repo: clopus
-  create_project_repos: true
+  coverage_threshold: 80     # Minimum test coverage %
 ```
 
-## Directory Structure
+## Memory System
 
+### Short-Term Memory (SQLite)
+
+Stores transient state:
+- Current objectives and task queues
+- Worker assignments and status
+- Validation results
+- Active session data
+
+### Long-Term Memory (ChromaDB)
+
+Semantic vector database for:
+- **Patterns**: Reusable code patterns with embeddings
+- **Solutions**: Problem-solution pairs for reference
+- **Mistakes**: Anti-patterns to avoid
+- **Decisions**: Past decisions with outcomes for learning
+
+### How It Works
+
+```python
+# Storing a pattern
+await memory.long_term.store(
+    memory_type="pattern",
+    content="React hook for API calls with loading/error states",
+    metadata={"category": "react", "tags": ["hooks", "api"]}
+)
+
+# Semantic search
+results = await memory.long_term.search(
+    query="how to handle API errors in React",
+    n_results=5
+)
 ```
-clopus/
-├── clopus                    # Main CLI entrypoint
-├── setup.sh                  # Setup script
-├── docker-compose.yml        # Service orchestration
-├── Dockerfile.*              # Container definitions
-├── config.yaml               # Configuration
-│
-├── orchestrator/             # Python orchestrator
-│   ├── main.py               # Entry point
-│   ├── config.py             # Configuration loading
-│   ├── objective_parser.py   # Parse user objectives
-│   ├── task_planner.py       # Break into tasks
-│   ├── worker_pool.py        # Manage workers
-│   ├── confidence_engine.py  # Decision confidence
-│   ├── memory_client.py      # Memory interface
-│   ├── skills_engine.py      # Skill management
-│   ├── mcp_generator.py      # Generate MCPs
-│   ├── template_extractor.py # Extract templates
-│   ├── github_sync.py        # GitHub operations
-│   └── service_manager.py    # Service lifecycle
-│
-├── memory/                   # Memory system
-│   ├── short_term.py         # SQLite operations
-│   ├── long_term.py          # ChromaDB operations
-│   ├── embeddings.py         # Embedding generation
-│   └── schema.sql            # Database schema
-│
-├── validation/               # Validation pipeline
-│   ├── pipeline.py           # Stage orchestration
-│   └── stages/               # Individual validators
-│
-├── interfaces/               # User interfaces
-│   ├── cli_adapter.py        # CLI interface
-│   └── file_adapter.py       # File-based interface
-│
-├── mcp-servers/              # MCP servers
-│   └── core/                 # Core servers
-│       ├── browser/          # Playwright automation
-│       ├── memory/           # Memory access
-│       ├── validation/       # Run validation
-│       ├── email-resend/     # Resend email
-│       ├── email-smtp/       # SMTP email
-│       ├── database-postgres/# PostgreSQL
-│       ├── database-redis/   # Redis
-│       ├── storage-s3/       # S3/MinIO
-│       ├── github/           # GitHub API
-│       └── search/           # Web search
-│
-├── skills/                   # Claude Skills
-│   └── core/                 # Core skills
-│       ├── development/      # Dev skills
-│       ├── testing/          # Test skills
-│       ├── data/             # Data skills
-│       └── devops/           # DevOps skills
-│
-├── templates/                # Project templates
-│   └── core/                 # Core templates
-│
-├── workers/                  # Worker configuration
-│   ├── system-prompts/       # Role-specific prompts
-│   └── hooks/                # Pre/post task hooks
-│
-├── monitoring/               # Monitoring configs
-│   ├── prometheus.yml
-│   └── grafana/
-│
-├── tests/                    # Test suite
-│   ├── unit/
-│   ├── integration/
-│   └── e2e/
-│
-├── ipc/                      # Inter-process communication
-│   ├── tasks/                # Worker task queues
-│   └── interface/            # User interface files
-│
-└── data/                     # Persistent data
-    ├── clopus.db             # SQLite database
-    └── chromadb/             # Vector database
-```
+
+## Self-Generating Ecosystem
+
+CLOPUS learns and improves from every project:
+
+### Skills Generation
+
+When CLOPUS notices recurring patterns:
+1. Identifies pattern across multiple tasks
+2. Abstracts into reusable skill
+3. Validates skill works in isolation
+4. Syncs to GitHub repository
+
+### MCP Server Generation
+
+When CLOPUS needs a new API:
+1. Searches for existing MCP servers
+2. If none found, researches API documentation
+3. Generates TypeScript MCP server
+4. Tests with sample requests
+5. Syncs to GitHub
+
+### Template Extraction
+
+After completing a project:
+1. Analyzes project structure
+2. Identifies project-specific vs. reusable code
+3. Replaces specifics with `{{PARAMETERS}}`
+4. Creates template.json manifest
+5. Validates template can regenerate
+6. Syncs to GitHub
 
 ## MCP Servers
 
 ### Core Servers
 
-| Server | Description | Tools |
-|--------|-------------|-------|
-| **browser** | Playwright automation | navigate, screenshot, click, fill, get_text, get_html |
+| Server | Description | Key Tools |
+|--------|-------------|-----------|
+| **browser** | Playwright automation | navigate, screenshot, click, fill, evaluate |
 | **memory** | Memory system access | store, retrieve, search, forget |
-| **validation** | Run validation pipeline | validate, get_results |
+| **validation** | Run validation pipeline | validate, get_results, get_coverage |
 | **email-resend** | Email via Resend API | send_email, send_template |
 | **email-smtp** | Email via SMTP | send_email, send_with_attachment |
 | **database-postgres** | PostgreSQL operations | query, execute, transaction |
 | **database-redis** | Redis operations | get, set, delete, publish, subscribe |
 | **storage-s3** | S3/MinIO storage | upload, download, list, delete |
-| **github** | GitHub API operations | create_repo, create_pr, merge_pr, create_issue |
+| **github** | GitHub API | create_repo, create_pr, create_issue |
 | **search** | Web search | search, fetch_page |
+| **calendar** | Google Calendar | list_events, create_event, find_free_time |
+| **notifications** | Push notifications | send_firebase, send_onesignal |
+
+### Adding Custom MCP Servers
+
+1. Create server in `mcp-servers/custom/your-server/`
+2. Add to `workers/.mcp.json`
+3. Rebuild workers: `docker-compose build worker`
 
 ## Skills
 
@@ -392,7 +499,7 @@ Skills are Claude-invokable capabilities defined in SKILL.md files:
 ```markdown
 ---
 name: react-typescript
-description: Build React applications with TypeScript
+description: Build React applications with TypeScript, Vite, or Next.js. Use when creating React components, implementing hooks, or building frontend UIs.
 version: 1.0.0
 author: CLOPUS
 tools:
@@ -404,97 +511,190 @@ triggers:
   - react
   - typescript
   - frontend
+  - component
 ---
 
 # React TypeScript Development
 
 ## Context
-You are building a React application with TypeScript...
+You are an expert React developer using TypeScript...
 
 ## Instructions
 1. Use functional components with hooks
-2. Define proper TypeScript interfaces
+2. Define proper TypeScript interfaces for all props
+3. Implement error boundaries for resilience
 ...
 ```
 
-### Available Core Skills
+### Core Skills
 
-- **react-typescript** - React + TypeScript development
-- **python-fastapi** - FastAPI backend development
-- **playwright-e2e** - End-to-end testing with Playwright
-- **web-scraping** - Web scraping with various tools
-- **docker-containerization** - Docker and containerization
+| Category | Skills |
+|----------|--------|
+| Development | react-typescript, nextjs-fullstack, python-fastapi, expo-mobile |
+| Testing | playwright-e2e, jest-unit, pytest-python |
+| Data | web-scraping, data-analysis |
+| DevOps | docker-containerization, ci-cd-github-actions |
+| Research | web-search, documentation-reader |
+| Media | ffmpeg-video, imagemagick-images, whisper-transcription |
 
 ## Templates
 
-Templates are reusable project scaffolds:
+Templates are parameterized project scaffolds:
 
 ```json
 {
   "name": "saas-starter",
-  "description": "Full-stack SaaS application",
+  "description": "Full-stack SaaS with Next.js, Prisma, Stripe",
+  "version": "1.0.0",
+  "type": "nextjs",
   "parameters": {
-    "PROJECT_NAME": {"required": true},
-    "DATABASE_URL": {"required": true}
+    "PROJECT_NAME": {"required": true, "default": "my-saas"},
+    "DATABASE_URL": {"required": true},
+    "STRIPE_KEY": {"required": false}
   },
-  "technologies": ["nextjs", "prisma", "stripe"],
-  "features": ["authentication", "payments", "dashboard"]
+  "technologies": ["nextjs", "prisma", "stripe", "tailwindcss"],
+  "hooks": {
+    "post-create": "npm install && prisma generate"
+  }
 }
 ```
 
-### Available Core Templates
+### Using Templates
 
-- **saas-starter** - Full-stack SaaS with Next.js, Prisma, Stripe
-- **python-api** - FastAPI backend with SQLAlchemy, auth, testing
+```bash
+# List available templates
+./clopus templates
+
+# Apply a template
+./clopus template use saas-starter my-new-app
+
+# With parameters
+./clopus template use saas-starter my-app \
+  --param DATABASE_URL="postgresql://..." \
+  --param STRIPE_KEY="sk_..."
+```
+
+## Configuration
+
+### Environment Variables
+
+Create `.env` from `.env.example`:
+
+```bash
+# Authentication (choose one)
+AUTH_MODE=oauth                    # oauth or api
+CLAUDE_OAUTH_TOKEN=...             # For oauth mode
+ANTHROPIC_API_KEY=sk-ant-...       # For api mode
+
+# GitHub
+GITHUB_TOKEN=ghp_...
+
+# Workers
+WORKERS=5
+CLAUDE_MODEL=claude-sonnet-4-20250514
+
+# External Services (optional)
+RESEND_API_KEY=re_...
+STRIPE_SECRET_KEY=sk_...
+OPENAI_API_KEY=sk-...
+
+# Google Calendar (optional)
+GOOGLE_CLIENT_ID=...
+GOOGLE_CLIENT_SECRET=...
+GOOGLE_REFRESH_TOKEN=...
+
+# Notifications (optional)
+FIREBASE_SERVICE_ACCOUNT=...
+ONESIGNAL_APP_ID=...
+```
+
+### config.yaml
+
+```yaml
+workers:
+  count: 5
+  heartbeat_interval: 30
+  task_timeout: 3600
+
+memory:
+  sqlite_path: ./data/clopus.db
+  chromadb_path: ./data/chromadb
+  embedding_model: all-MiniLM-L6-v2
+
+validation:
+  strict_mode: true
+  coverage_threshold: 80
+
+confidence:
+  threshold: 0.7
+  learning_rate: 0.1
+
+github:
+  auto_sync: true
+  default_visibility: private
+```
 
 ## Monitoring
 
-CLOPUS includes Prometheus and Grafana for monitoring:
+CLOPUS includes Prometheus and Grafana:
 
-- **Prometheus**: http://localhost:9090
-- **Grafana**: http://localhost:3001 (admin/admin)
+```bash
+# Enable monitoring
+./clopus start --with-monitoring
 
-Metrics tracked:
+# Access dashboards
+# Prometheus: http://localhost:9090
+# Grafana: http://localhost:3001 (admin/admin)
+```
+
+### Metrics
+
 - Worker status and task throughput
-- Validation pass/fail rates
-- Memory usage and query performance
-- API response times
+- Validation pass/fail rates by stage
+- Memory query latency
+- Confidence scores over time
+- API token usage
 
-## Development
+## API Reference
 
-### Running Tests
+### Orchestrator API
 
-```bash
-# Unit tests
-./clopus test unit
+The orchestrator exposes an internal API for programmatic access:
 
-# Integration tests
-./clopus test integration
+```python
+from clopus import ClopusClient
 
-# E2E tests
-./clopus test e2e
+client = ClopusClient()
 
-# All tests
-./clopus test all
+# Submit objective
+obj = await client.submit_objective("Build a todo app")
+
+# Get status
+status = await client.get_status(obj.id)
+
+# Answer question
+await client.answer_question(question_id, "Use React")
+
+# Get results
+results = await client.get_results(obj.id)
 ```
 
-### Building
+### Webhook Interface
 
 ```bash
-# Build all containers
-docker-compose build
-
-# Build specific service
-docker-compose build orchestrator
+# Start with webhook server
+./clopus start --webhook-port 8080
 ```
 
-### Contributing
+```bash
+# Submit objective via webhook
+curl -X POST http://localhost:8080/objective \
+  -H "Content-Type: application/json" \
+  -d '{"objective": "Build a REST API"}'
 
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Run tests
-5. Submit a pull request
+# Get status
+curl http://localhost:8080/status/{objective_id}
+```
 
 ## Troubleshooting
 
@@ -502,40 +702,91 @@ docker-compose build orchestrator
 
 **Workers not starting**
 ```bash
-# Check worker logs
 ./clopus logs worker-1
-
-# Verify API key
-./clopus login
+./clopus login  # Reconfigure auth
 ```
 
 **Memory errors**
 ```bash
-# Reset memory
-docker-compose down -v
+docker-compose down -v  # Reset volumes
 ./clopus start
 ```
 
 **Validation failures**
 ```bash
-# View validation results
 cat data/validation_results.json
-
-# Run validation manually
-./clopus validate ./project
+./clopus validate ./project --verbose
 ```
 
-### Logs
+**MCP server issues**
+```bash
+./clopus logs mcp-servers
+docker-compose build mcp-servers
+```
+
+### Debug Mode
 
 ```bash
-# All logs
-./clopus logs
-
-# Specific service
-./clopus logs orchestrator
-./clopus logs worker-1
-./clopus logs chromadb
+LOG_LEVEL=DEBUG ./clopus start
 ```
+
+### Reset Everything
+
+```bash
+./clopus stop
+docker-compose down -v
+rm -rf data/
+./clopus start
+```
+
+## Contributing
+
+We welcome contributions! See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+
+### Development Setup
+
+```bash
+# Clone
+git clone https://github.com/joseluissaorin/clopus.git
+cd clopus
+
+# Install dev dependencies
+pip install -r requirements-dev.txt
+npm install
+
+# Run tests
+./clopus test all
+
+# Build containers
+docker-compose build
+```
+
+### Areas for Contribution
+
+- New MCP servers for APIs
+- Additional skills
+- Project templates
+- Documentation improvements
+- Bug fixes
+
+## Roadmap
+
+### v3.1 (Next)
+- [ ] Web UI dashboard
+- [ ] Multi-project management
+- [ ] Cost tracking and budgets
+- [ ] Custom worker roles
+
+### v3.2
+- [ ] Cloud deployment (AWS, GCP)
+- [ ] Team collaboration features
+- [ ] Webhook notifications
+- [ ] Plugin system
+
+### Future
+- [ ] Voice interface
+- [ ] Mobile app
+- [ ] Self-hosted marketplace for skills/templates
 
 ## License
 
@@ -544,9 +795,17 @@ MIT License - see [LICENSE](LICENSE) for details.
 ## Acknowledgments
 
 - Inspired by [Clopus-02](https://denislavgavrilov.com/p/clopus-02-a-24-hour-claude-code-run) by Denislav Gavrilov
-- Built with [Claude Code](https://claude.ai/claude-code) by Anthropic
+- Built with [Claude Code](https://claude.ai/code) by Anthropic
 - Uses [Model Context Protocol](https://modelcontextprotocol.io/) for tool integration
+- Vector search powered by [ChromaDB](https://www.trychroma.com/)
 
 ---
 
-**CLOPUS v3** - Autonomous development, amplified.
+<p align="center">
+  <strong>CLOPUS v3</strong> - Autonomous development, amplified.
+</p>
+
+<p align="center">
+  <a href="https://github.com/joseluissaorin/clopus/issues">Report Bug</a> |
+  <a href="https://github.com/joseluissaorin/clopus/issues">Request Feature</a>
+</p>
