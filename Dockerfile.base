@@ -1,0 +1,302 @@
+# =============================================================================
+# CLOPUS v3 Base Image
+# =============================================================================
+# Shared base image with all development tools and languages
+# Used by orchestrator, workers, and as foundation for other images
+
+FROM ubuntu:24.04
+
+LABEL maintainer="CLOPUS Team"
+LABEL version="3.0.0"
+LABEL description="CLOPUS Base Image with Universal Development Capabilities"
+
+# Prevent interactive prompts
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=UTC
+
+# =============================================================================
+# System Dependencies
+# =============================================================================
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    # Build essentials
+    build-essential \
+    cmake \
+    pkg-config \
+    # Version control
+    git \
+    git-lfs \
+    # Networking
+    curl \
+    wget \
+    ca-certificates \
+    gnupg \
+    # Utilities
+    unzip \
+    zip \
+    jq \
+    tree \
+    htop \
+    vim \
+    nano \
+    # Libraries
+    libssl-dev \
+    libffi-dev \
+    zlib1g-dev \
+    libbz2-dev \
+    libreadline-dev \
+    libsqlite3-dev \
+    libncurses5-dev \
+    libncursesw5-dev \
+    xz-utils \
+    tk-dev \
+    libxml2-dev \
+    libxmlsec1-dev \
+    liblzma-dev \
+    # Database clients
+    postgresql-client \
+    redis-tools \
+    # Media tools
+    ffmpeg \
+    imagemagick \
+    libmagickwand-dev \
+    # Headless browser dependencies
+    libnss3 \
+    libnspr4 \
+    libatk1.0-0 \
+    libatk-bridge2.0-0 \
+    libcups2 \
+    libdrm2 \
+    libxkbcommon0 \
+    libxcomposite1 \
+    libxdamage1 \
+    libxfixes3 \
+    libxrandr2 \
+    libgbm1 \
+    libasound2 \
+    libpango-1.0-0 \
+    libcairo2 \
+    && rm -rf /var/lib/apt/lists/*
+
+# =============================================================================
+# Python 3.11+
+# =============================================================================
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3.12 \
+    python3.12-venv \
+    python3.12-dev \
+    python3-pip \
+    && rm -rf /var/lib/apt/lists/* \
+    && ln -sf /usr/bin/python3.12 /usr/bin/python3 \
+    && ln -sf /usr/bin/python3 /usr/bin/python
+
+# Upgrade pip
+RUN python3 -m pip install --upgrade pip setuptools wheel --break-system-packages
+
+# =============================================================================
+# Node.js 20 LTS
+# =============================================================================
+RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+    && apt-get install -y nodejs \
+    && rm -rf /var/lib/apt/lists/* \
+    && npm install -g npm@latest \
+    && npm install -g pnpm yarn
+
+# =============================================================================
+# Go 1.22+
+# =============================================================================
+ENV GO_VERSION=1.22.0
+RUN curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" | tar -C /usr/local -xzf -
+ENV PATH="/usr/local/go/bin:${PATH}"
+ENV GOPATH="/go"
+ENV PATH="${GOPATH}/bin:${PATH}"
+
+# =============================================================================
+# Rust (latest stable)
+# =============================================================================
+ENV RUSTUP_HOME=/usr/local/rustup
+ENV CARGO_HOME=/usr/local/cargo
+ENV PATH="/usr/local/cargo/bin:${PATH}"
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+
+# =============================================================================
+# PHP 8.2+ (for WordPress development)
+# =============================================================================
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    php8.2 \
+    php8.2-cli \
+    php8.2-common \
+    php8.2-curl \
+    php8.2-mbstring \
+    php8.2-xml \
+    php8.2-zip \
+    php8.2-mysql \
+    php8.2-pgsql \
+    composer \
+    && rm -rf /var/lib/apt/lists/*
+
+# =============================================================================
+# Ruby 3.2+ (for Jekyll, Rails)
+# =============================================================================
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ruby3.2 \
+    ruby3.2-dev \
+    && rm -rf /var/lib/apt/lists/* \
+    && gem install bundler
+
+# =============================================================================
+# Cloud CLIs
+# =============================================================================
+
+# AWS CLI v2
+RUN curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip" \
+    && unzip awscliv2.zip \
+    && ./aws/install \
+    && rm -rf awscliv2.zip aws
+
+# Google Cloud CLI
+RUN echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" | tee -a /etc/apt/sources.list.d/google-cloud-sdk.list \
+    && curl https://packages.cloud.google.com/apt/doc/apt-key.gpg | gpg --dearmor -o /usr/share/keyrings/cloud.google.gpg \
+    && apt-get update && apt-get install -y google-cloud-cli \
+    && rm -rf /var/lib/apt/lists/*
+
+# GitHub CLI
+RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg \
+    && chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | tee /etc/apt/sources.list.d/github-cli.list > /dev/null \
+    && apt-get update && apt-get install -y gh \
+    && rm -rf /var/lib/apt/lists/*
+
+# =============================================================================
+# DevOps Tools
+# =============================================================================
+
+# Docker CLI (for Docker-in-Docker or host Docker socket)
+RUN curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null \
+    && apt-get update && apt-get install -y docker-ce-cli docker-compose-plugin \
+    && rm -rf /var/lib/apt/lists/*
+
+# Kubernetes tools
+RUN curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl" \
+    && install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl \
+    && rm kubectl
+
+# Helm
+RUN curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+
+# Terraform
+RUN apt-get update && apt-get install -y gnupg software-properties-common \
+    && wget -O- https://apt.releases.hashicorp.com/gpg | gpg --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg \
+    && echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main" | tee /etc/apt/sources.list.d/hashicorp.list \
+    && apt-get update && apt-get install -y terraform \
+    && rm -rf /var/lib/apt/lists/*
+
+# =============================================================================
+# Mobile Development
+# =============================================================================
+
+# Expo CLI
+RUN npm install -g expo-cli eas-cli
+
+# React Native CLI
+RUN npm install -g react-native-cli
+
+# =============================================================================
+# Python Global Packages
+# =============================================================================
+RUN pip3 install --break-system-packages \
+    # Web frameworks
+    fastapi \
+    uvicorn \
+    django \
+    flask \
+    # Database
+    sqlalchemy \
+    asyncpg \
+    psycopg2-binary \
+    redis \
+    pymongo \
+    # HTTP
+    httpx \
+    aiohttp \
+    requests \
+    # Data
+    pandas \
+    numpy \
+    # Testing
+    pytest \
+    pytest-asyncio \
+    pytest-cov \
+    # Linting
+    ruff \
+    mypy \
+    black \
+    # AI/ML
+    openai \
+    anthropic \
+    chromadb \
+    sentence-transformers \
+    # Utilities
+    pyyaml \
+    python-dotenv \
+    click \
+    rich \
+    watchdog
+
+# =============================================================================
+# Node.js Global Packages
+# =============================================================================
+RUN npm install -g \
+    # Build tools
+    typescript \
+    tsx \
+    esbuild \
+    vite \
+    # Linting
+    eslint \
+    prettier \
+    # Testing
+    jest \
+    vitest \
+    # Frameworks
+    create-next-app \
+    create-react-app \
+    # Utilities
+    npm-check-updates \
+    concurrently \
+    nodemon \
+    # MCP
+    @anthropic-ai/sdk
+
+# Playwright with browsers
+RUN npx playwright install --with-deps chromium firefox
+
+# =============================================================================
+# Security Tools
+# =============================================================================
+RUN pip3 install --break-system-packages \
+    safety \
+    bandit \
+    semgrep
+
+RUN npm install -g \
+    snyk \
+    audit-ci
+
+# =============================================================================
+# Whisper for audio transcription
+# =============================================================================
+RUN pip3 install --break-system-packages openai-whisper
+
+# =============================================================================
+# Claude Code
+# =============================================================================
+RUN npm install -g @anthropic-ai/claude-code
+
+# =============================================================================
+# Working Directory
+# =============================================================================
+WORKDIR /workspace
+
+# Default command
+CMD ["bash"]

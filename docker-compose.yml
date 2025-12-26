@@ -1,0 +1,456 @@
+# =============================================================================
+# CLOPUS v3 Docker Compose
+# =============================================================================
+# Full system orchestration with all services
+
+version: '3.8'
+
+x-common-env: &common-env
+  ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+  GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+  AUTH_MODE: ${AUTH_MODE:-hybrid}
+  LOG_LEVEL: ${LOG_LEVEL:-INFO}
+
+x-worker-common: &worker-common
+  build:
+    context: .
+    dockerfile: Dockerfile.worker
+  volumes:
+    - workspace:/workspace
+    - gh-config:/root/.config/gh:ro
+    - ssh-keys:/root/.ssh:ro
+    - anthropic-session:/root/.anthropic
+    - ipc:/app/ipc
+    - ./skills:/app/skills:ro
+    - ./workers/system-prompts:/app/system-prompts:ro
+    - ./workers/hooks:/app/hooks:ro
+  environment:
+    <<: *common-env
+    IPC_PATH: /app/ipc
+  depends_on:
+    - chromadb
+    - redis
+  networks:
+    - clopus-network
+  restart: unless-stopped
+
+services:
+  # ===========================================================================
+  # ORCHESTRATOR
+  # ===========================================================================
+  orchestrator:
+    build:
+      context: .
+      dockerfile: Dockerfile.orchestrator
+    container_name: clopus-orchestrator
+    volumes:
+      - ./:/app
+      - workspace:/workspace
+      - gh-config:/root/.config/gh:ro
+      - ssh-keys:/root/.ssh:ro
+      - anthropic-session:/root/.anthropic
+      - ipc:/app/ipc
+      - ./data/sqlite:/app/data/sqlite
+      - ./logs:/app/logs
+      - ./objectives:/app/objectives
+      - ./questions:/app/questions
+      - ./answers:/app/answers
+      - ./output:/app/output
+    environment:
+      <<: *common-env
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: ${POSTGRES_USER:-clopus}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-clopus}
+      POSTGRES_DB: ${POSTGRES_DB:-clopus}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      CHROMADB_HOST: chromadb
+      CHROMADB_PORT: 8000
+      MINIO_HOST: minio
+      MINIO_PORT: 9000
+      IPC_PATH: /app/ipc
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      chromadb:
+        condition: service_started
+    networks:
+      - clopus-network
+    restart: unless-stopped
+
+  # ===========================================================================
+  # WORKERS (5 instances with different roles)
+  # ===========================================================================
+  worker-1:
+    <<: *worker-common
+    container_name: clopus-worker-1
+    environment:
+      <<: *common-env
+      WORKER_ID: 1
+      WORKER_ROLE: coder
+      IPC_PATH: /app/ipc
+
+  worker-2:
+    <<: *worker-common
+    container_name: clopus-worker-2
+    environment:
+      <<: *common-env
+      WORKER_ID: 2
+      WORKER_ROLE: tester
+      IPC_PATH: /app/ipc
+
+  worker-3:
+    <<: *worker-common
+    container_name: clopus-worker-3
+    environment:
+      <<: *common-env
+      WORKER_ID: 3
+      WORKER_ROLE: reviewer
+      IPC_PATH: /app/ipc
+
+  worker-4:
+    <<: *worker-common
+    container_name: clopus-worker-4
+    environment:
+      <<: *common-env
+      WORKER_ID: 4
+      WORKER_ROLE: researcher
+      IPC_PATH: /app/ipc
+
+  worker-5:
+    <<: *worker-common
+    container_name: clopus-worker-5
+    environment:
+      <<: *common-env
+      WORKER_ID: 5
+      WORKER_ROLE: debugger
+      IPC_PATH: /app/ipc
+
+  # ===========================================================================
+  # TIER 1: CORE SERVICES (Always Running)
+  # ===========================================================================
+
+  # PostgreSQL
+  postgres:
+    image: postgres:16-alpine
+    container_name: clopus-postgres
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-clopus}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-clopus}
+      POSTGRES_DB: ${POSTGRES_DB:-clopus}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-clopus}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - clopus-network
+    restart: unless-stopped
+
+  # Redis
+  redis:
+    image: redis:7-alpine
+    container_name: clopus-redis
+    volumes:
+      - redis-data:/data
+    command: redis-server --appendonly yes
+    networks:
+      - clopus-network
+    restart: unless-stopped
+
+  # MinIO (S3-compatible storage)
+  minio:
+    image: minio/minio:latest
+    container_name: clopus-minio
+    volumes:
+      - minio-data:/data
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-minioadmin}
+    command: server /data --console-address ":9001"
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    networks:
+      - clopus-network
+    restart: unless-stopped
+
+  # ChromaDB (Vector database)
+  chromadb:
+    image: chromadb/chroma:latest
+    container_name: clopus-chromadb
+    volumes:
+      - chromadb-data:/chroma/chroma
+    environment:
+      IS_PERSISTENT: "TRUE"
+      ANONYMIZED_TELEMETRY: "FALSE"
+    ports:
+      - "8000:8000"
+    networks:
+      - clopus-network
+    restart: unless-stopped
+
+  # Browser Container
+  browser:
+    build:
+      context: .
+      dockerfile: Dockerfile.browser
+    container_name: clopus-browser
+    volumes:
+      - browser-profiles:/browser-profiles
+      - ./output/recordings:/recordings
+      - ./output/screenshots:/screenshots
+    environment:
+      SCREEN_WIDTH: 1920
+      SCREEN_HEIGHT: 1080
+      SCREEN_DEPTH: 24
+    ports:
+      - "6080:6080"  # noVNC web interface
+      - "5900:5900"  # VNC
+    shm_size: '2gb'
+    networks:
+      - clopus-network
+    restart: unless-stopped
+
+  # Traefik (Reverse Proxy)
+  traefik:
+    image: traefik:v3.0
+    container_name: clopus-traefik
+    command:
+      - "--api.insecure=true"
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--entrypoints.web.address=:80"
+      - "--entrypoints.websecure.address=:443"
+    ports:
+      - "80:80"
+      - "443:443"
+      - "8080:8080"  # Traefik dashboard
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - clopus-network
+    restart: unless-stopped
+
+  # Mailhog (Email testing)
+  mailhog:
+    image: mailhog/mailhog:latest
+    container_name: clopus-mailhog
+    ports:
+      - "1025:1025"  # SMTP
+      - "8025:8025"  # Web UI
+    networks:
+      - clopus-network
+    restart: unless-stopped
+
+  # Prometheus (Metrics)
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: clopus-prometheus
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.enable-lifecycle'
+    ports:
+      - "9090:9090"
+    networks:
+      - clopus-network
+    restart: unless-stopped
+
+  # Grafana (Dashboards)
+  grafana:
+    image: grafana/grafana:latest
+    container_name: clopus-grafana
+    volumes:
+      - ./monitoring/grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    ports:
+      - "3000:3000"
+    networks:
+      - clopus-network
+    restart: unless-stopped
+
+  # ===========================================================================
+  # TIER 2: ON-DEMAND SERVICES (Docker Profiles)
+  # ===========================================================================
+
+  mongodb:
+    image: mongo:7
+    container_name: clopus-mongodb
+    profiles: ["mongodb"]
+    volumes:
+      - mongodb-data:/data/db
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: clopus
+      MONGO_INITDB_ROOT_PASSWORD: clopus
+    networks:
+      - clopus-network
+    restart: unless-stopped
+
+  mysql:
+    image: mysql:8
+    container_name: clopus-mysql
+    profiles: ["mysql"]
+    volumes:
+      - mysql-data:/var/lib/mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: clopus
+      MYSQL_DATABASE: clopus
+    networks:
+      - clopus-network
+    restart: unless-stopped
+
+  elasticsearch:
+    image: elasticsearch:8.11.0
+    container_name: clopus-elasticsearch
+    profiles: ["elasticsearch"]
+    volumes:
+      - elasticsearch-data:/usr/share/elasticsearch/data
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
+    networks:
+      - clopus-network
+    restart: unless-stopped
+
+  rabbitmq:
+    image: rabbitmq:3-management
+    container_name: clopus-rabbitmq
+    profiles: ["rabbitmq"]
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: clopus
+      RABBITMQ_DEFAULT_PASS: clopus
+    ports:
+      - "15672:15672"  # Management UI
+    networks:
+      - clopus-network
+    restart: unless-stopped
+
+  kafka:
+    image: confluentinc/cp-kafka:latest
+    container_name: clopus-kafka
+    profiles: ["kafka"]
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+    depends_on:
+      - zookeeper
+    networks:
+      - clopus-network
+    restart: unless-stopped
+
+  zookeeper:
+    image: confluentinc/cp-zookeeper:latest
+    container_name: clopus-zookeeper
+    profiles: ["kafka"]
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+    networks:
+      - clopus-network
+    restart: unless-stopped
+
+  wordpress:
+    image: wordpress:latest
+    container_name: clopus-wordpress
+    profiles: ["wordpress"]
+    volumes:
+      - wordpress-data:/var/www/html
+    environment:
+      WORDPRESS_DB_HOST: mysql
+      WORDPRESS_DB_USER: root
+      WORDPRESS_DB_PASSWORD: clopus
+      WORDPRESS_DB_NAME: wordpress
+    depends_on:
+      - mysql
+    networks:
+      - clopus-network
+    restart: unless-stopped
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:latest
+    container_name: clopus-keycloak
+    profiles: ["keycloak"]
+    environment:
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: admin
+    command: start-dev
+    ports:
+      - "8081:8080"
+    networks:
+      - clopus-network
+    restart: unless-stopped
+
+# =============================================================================
+# NETWORKS
+# =============================================================================
+networks:
+  clopus-network:
+    driver: bridge
+
+# =============================================================================
+# VOLUMES
+# =============================================================================
+volumes:
+  # Core data
+  postgres-data:
+  redis-data:
+  minio-data:
+  chromadb-data:
+
+  # Shared volumes
+  workspace:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${HOME}/Dev
+  gh-config:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${HOME}/.config/gh
+  ssh-keys:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${HOME}/.ssh
+  anthropic-session:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${HOME}/.anthropic
+  ipc:
+
+  # Browser
+  browser-profiles:
+
+  # Monitoring
+  prometheus-data:
+  grafana-data:
+
+  # On-demand services
+  mongodb-data:
+  mysql-data:
+  elasticsearch-data:
+  rabbitmq-data:
+  wordpress-data:

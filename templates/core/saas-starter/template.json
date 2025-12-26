@@ -1,0 +1,40 @@
+{
+  "name": "saas-starter",
+  "description": "Complete SaaS application scaffold with auth, billing, and dashboard",
+  "version": "1.0.0",
+  "type": "nextjs",
+  "author": "CLOPUS",
+  "parameters": {
+    "PROJECT_NAME": {
+      "description": "Project name",
+      "default": "my-saas",
+      "required": true
+    },
+    "DESCRIPTION": {
+      "description": "Project description",
+      "default": "A modern SaaS application",
+      "required": false
+    },
+    "DATABASE_URL": {
+      "description": "Database connection string",
+      "default": "postgresql://localhost/myapp",
+      "required": true
+    }
+  },
+  "technologies": [
+    "next",
+    "react",
+    "typescript",
+    "tailwindcss",
+    "prisma",
+    "stripe",
+    "next-auth"
+  ],
+  "features": [
+    "authentication",
+    "billing",
+    "dashboard",
+    "database",
+    "api-routes"
+  ]
+}

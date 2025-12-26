@@ -1,0 +1,136 @@
+# =============================================================================
+# CLOPUS v3 Browser Container
+# =============================================================================
+# Full Chromium browser with VNC access for visual debugging
+
+FROM ubuntu:24.04
+
+LABEL maintainer="CLOPUS Team"
+LABEL version="3.0.0"
+LABEL description="CLOPUS Browser Container with VNC"
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=UTC
+
+# =============================================================================
+# Install Dependencies
+# =============================================================================
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    # Browser
+    chromium-browser \
+    chromium-chromedriver \
+    firefox \
+    # VNC
+    x11vnc \
+    xvfb \
+    # Window manager
+    fluxbox \
+    # noVNC for web access
+    novnc \
+    websockify \
+    # Supervisor for process management
+    supervisor \
+    # Utilities
+    curl \
+    wget \
+    jq \
+    ca-certificates \
+    fonts-liberation \
+    fonts-noto \
+    fonts-noto-cjk \
+    fonts-noto-color-emoji \
+    # Screen recording
+    ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+
+# =============================================================================
+# Display Configuration
+# =============================================================================
+ENV DISPLAY=:99
+ENV SCREEN_WIDTH=1920
+ENV SCREEN_HEIGHT=1080
+ENV SCREEN_DEPTH=24
+
+# =============================================================================
+# VNC Configuration
+# =============================================================================
+ENV VNC_PORT=5900
+ENV NOVNC_PORT=6080
+ENV VNC_PASSWORD=""
+
+# =============================================================================
+# noVNC Setup
+# =============================================================================
+RUN ln -sf /usr/share/novnc/vnc.html /usr/share/novnc/index.html
+
+# =============================================================================
+# Browser Profiles Directory
+# =============================================================================
+RUN mkdir -p /browser-profiles /recordings /screenshots
+
+# =============================================================================
+# Supervisor Configuration
+# =============================================================================
+COPY <<'EOF' /etc/supervisor/conf.d/supervisord.conf
+[supervisord]
+nodaemon=true
+logfile=/var/log/supervisord.log
+pidfile=/var/run/supervisord.pid
+
+[program:xvfb]
+command=/usr/bin/Xvfb :99 -screen 0 %(ENV_SCREEN_WIDTH)sx%(ENV_SCREEN_HEIGHT)sx%(ENV_SCREEN_DEPTH)s
+autorestart=true
+priority=100
+
+[program:fluxbox]
+command=/usr/bin/fluxbox
+environment=DISPLAY=":99"
+autorestart=true
+priority=200
+startsecs=5
+
+[program:x11vnc]
+command=/usr/bin/x11vnc -display :99 -forever -shared -rfbport %(ENV_VNC_PORT)s -nopw
+autorestart=true
+priority=300
+startsecs=5
+
+[program:novnc]
+command=/usr/bin/websockify --web /usr/share/novnc %(ENV_NOVNC_PORT)s localhost:%(ENV_VNC_PORT)s
+autorestart=true
+priority=400
+startsecs=5
+EOF
+
+# =============================================================================
+# Startup Script
+# =============================================================================
+COPY <<'EOF' /start.sh
+#!/bin/bash
+set -e
+
+echo "Starting CLOPUS Browser Container..."
+echo "Screen: ${SCREEN_WIDTH}x${SCREEN_HEIGHT}x${SCREEN_DEPTH}"
+echo "VNC Port: ${VNC_PORT}"
+echo "noVNC Port: ${NOVNC_PORT}"
+
+# Start supervisor
+exec /usr/bin/supervisord -c /etc/supervisor/conf.d/supervisord.conf
+EOF
+
+RUN chmod +x /start.sh
+
+# =============================================================================
+# Expose Ports
+# =============================================================================
+EXPOSE 5900 6080
+
+# =============================================================================
+# Volumes
+# =============================================================================
+VOLUME ["/browser-profiles", "/recordings", "/screenshots"]
+
+# =============================================================================
+# Entry Point
+# =============================================================================
+CMD ["/start.sh"]

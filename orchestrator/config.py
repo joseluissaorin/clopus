@@ -1,0 +1,191 @@
+# =============================================================================
+# CLOPUS v3 Configuration
+# =============================================================================
+"""
+Configuration management for the orchestrator.
+Loads from environment variables and config files.
+"""
+
+import os
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+from dataclasses import dataclass, field
+from pydantic import BaseModel, Field
+from pydantic_settings import BaseSettings
+import yaml
+
+
+class WorkerConfig(BaseModel):
+    """Worker configuration."""
+    count: int = 5
+    roles: List[str] = ["coder", "tester", "reviewer", "researcher", "debugger"]
+    poll_interval_ms: int = 500
+    heartbeat_interval_s: int = 10
+    task_timeout_s: int = 3600
+
+
+class MemoryConfig(BaseModel):
+    """Memory system configuration."""
+    sqlite_path: str = "/app/data/sqlite/clopus.db"
+    chromadb_host: str = "chromadb"
+    chromadb_port: int = 8000
+    embedding_model: str = "all-MiniLM-L6-v2"
+    embedding_cache_size: int = 10000
+
+
+class ValidationConfig(BaseModel):
+    """Validation pipeline configuration."""
+    enabled_stages: List[str] = [
+        "syntax", "lint", "build", "unit_tests",
+        "integration_tests", "e2e_tests", "security", "review"
+    ]
+    strict_mode: bool = True
+    allow_warnings: bool = True
+    max_retries: int = 3
+    timeout_per_stage_s: int = 300
+
+
+class ConfidenceConfig(BaseModel):
+    """Confidence engine configuration."""
+    threshold: float = 0.7
+    weights: Dict[str, float] = {
+        "task_complexity": 0.2,
+        "similar_past_success": 0.25,
+        "clear_requirements": 0.2,
+        "available_context": 0.15,
+        "domain_familiarity": 0.2
+    }
+    learning_rate: float = 0.1
+
+
+class GitHubConfig(BaseModel):
+    """GitHub integration configuration."""
+    clopus_repo: str = ""
+    auto_sync: bool = True
+    sync_skills: bool = True
+    sync_templates: bool = True
+    sync_mcps: bool = True
+    commit_prefix: str = "[CLOPUS]"
+
+
+class ServicesConfig(BaseModel):
+    """Services configuration."""
+    postgres_host: str = "postgres"
+    postgres_port: int = 5432
+    postgres_user: str = "clopus"
+    postgres_password: str = "clopus"
+    postgres_db: str = "clopus"
+    redis_host: str = "redis"
+    redis_port: int = 6379
+    minio_host: str = "minio"
+    minio_port: int = 9000
+    minio_access_key: str = "minioadmin"
+    minio_secret_key: str = "minioadmin"
+
+
+class EmailConfig(BaseModel):
+    """Email configuration."""
+    provider: str = "smtp"  # smtp, resend
+    smtp_host: str = "mailhog"
+    smtp_port: int = 1025
+    smtp_user: str = ""
+    smtp_password: str = ""
+    resend_api_key: str = ""
+    from_address: str = "clopus@localhost"
+
+
+class InterfaceConfig(BaseModel):
+    """Interface configuration."""
+    cli_enabled: bool = True
+    file_adapter_enabled: bool = True
+    webhook_enabled: bool = False
+    webhook_port: int = 8888
+    objectives_dir: str = "/app/objectives"
+    questions_dir: str = "/app/questions"
+    answers_dir: str = "/app/answers"
+
+
+class Settings(BaseSettings):
+    """Main settings loaded from environment."""
+
+    # API Keys
+    anthropic_api_key: str = ""
+    github_token: str = ""
+
+    # Auth
+    auth_mode: str = "hybrid"  # api, login, hybrid
+
+    # Logging
+    log_level: str = "INFO"
+    log_format: str = "json"
+
+    # Paths
+    workspace_path: str = "/workspace"
+    ipc_path: str = "/app/ipc"
+    output_path: str = "/app/output"
+    skills_path: str = "/app/skills"
+    templates_path: str = "/app/templates"
+    mcp_servers_path: str = "/app/mcp-servers"
+
+    # Component configs (loaded from config.yaml)
+    workers: WorkerConfig = WorkerConfig()
+    memory: MemoryConfig = MemoryConfig()
+    validation: ValidationConfig = ValidationConfig()
+    confidence: ConfidenceConfig = ConfidenceConfig()
+    github: GitHubConfig = GitHubConfig()
+    services: ServicesConfig = ServicesConfig()
+    email: EmailConfig = EmailConfig()
+    interface: InterfaceConfig = InterfaceConfig()
+
+    class Config:
+        env_prefix = ""
+        case_sensitive = False
+        env_file = ".env"
+        env_file_encoding = "utf-8"
+
+
+def load_config(config_path: Optional[str] = None) -> Settings:
+    """Load configuration from environment and config file."""
+    settings = Settings()
+
+    # Load config.yaml if exists
+    if config_path is None:
+        config_path = os.environ.get("CLOPUS_CONFIG", "/app/config.yaml")
+
+    config_file = Path(config_path)
+    if config_file.exists():
+        with open(config_file) as f:
+            config_data = yaml.safe_load(f)
+
+        if config_data:
+            # Update component configs from file
+            if "workers" in config_data:
+                settings.workers = WorkerConfig(**config_data["workers"])
+            if "memory" in config_data:
+                settings.memory = MemoryConfig(**config_data["memory"])
+            if "validation" in config_data:
+                settings.validation = ValidationConfig(**config_data["validation"])
+            if "confidence" in config_data:
+                settings.confidence = ConfidenceConfig(**config_data["confidence"])
+            if "github" in config_data:
+                settings.github = GitHubConfig(**config_data["github"])
+            if "services" in config_data:
+                settings.services = ServicesConfig(**config_data["services"])
+            if "email" in config_data:
+                settings.email = EmailConfig(**config_data["email"])
+            if "interface" in config_data:
+                settings.interface = InterfaceConfig(**config_data["interface"])
+
+    return settings
+
+
+# Global settings instance
+_settings: Optional[Settings] = None
+
+
+def get_settings() -> Settings:
+    """Get or create global settings instance."""
+    global _settings
+    if _settings is None:
+        _settings = load_config()
+    return _settings

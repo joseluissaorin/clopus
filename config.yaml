@@ -1,0 +1,246 @@
+# =============================================================================
+# CLOPUS v3 Configuration
+# =============================================================================
+
+system:
+  name: "clopus"
+  version: "3.0.0"
+  log_level: "${LOG_LEVEL:-INFO}"
+
+# =============================================================================
+# Authentication
+# =============================================================================
+auth:
+  mode: "${AUTH_MODE:-hybrid}"  # api | login | hybrid
+  api_key_env: "ANTHROPIC_API_KEY"
+  session_path: "~/.anthropic"
+  fallback_to_api: true
+
+# =============================================================================
+# Worker Configuration
+# =============================================================================
+workers:
+  count: ${WORKERS:-5}
+  model: "${CLAUDE_MODEL:-claude-sonnet-4-20250514}"
+  roles:
+    - coder
+    - tester
+    - reviewer
+    - researcher
+    - debugger
+    - deployer
+  max_concurrent_tasks: 3
+  poll_interval_ms: 500
+  ipc_path: "./ipc/tasks"
+
+# =============================================================================
+# Memory Configuration
+# =============================================================================
+memory:
+  short_term:
+    type: "sqlite"
+    path: "./data/sqlite/clopus.db"
+    max_entries: 1000
+    cleanup_interval_hours: 24
+  long_term:
+    type: "chromadb"
+    host: "${CHROMADB_HOST:-chromadb}"
+    port: ${CHROMADB_PORT:-8000}
+    collection: "clopus_memory"
+    embedding_model: "all-MiniLM-L6-v2"
+
+# =============================================================================
+# Validation Pipeline
+# =============================================================================
+validation:
+  strict: true
+  coverage_threshold: ${COVERAGE_THRESHOLD:-80}
+  max_failures_before_escalate: 3
+  max_failures_before_ask: 5
+  stages:
+    - name: syntax
+      enabled: true
+      timeout_seconds: 60
+    - name: lint
+      enabled: true
+      timeout_seconds: 120
+    - name: build
+      enabled: true
+      timeout_seconds: 300
+    - name: unit_tests
+      enabled: true
+      timeout_seconds: 300
+    - name: integration_tests
+      enabled: true
+      timeout_seconds: 300
+    - name: e2e_tests
+      enabled: true
+      timeout_seconds: 600
+    - name: security
+      enabled: true
+      timeout_seconds: 180
+    - name: review
+      enabled: true
+      timeout_seconds: 300
+
+# =============================================================================
+# Confidence Engine
+# =============================================================================
+confidence:
+  threshold: ${CONFIDENCE_THRESHOLD:-0.7}
+  learning_enabled: true
+  weights:
+    similar_past_decisions: 0.25
+    past_outcome_success_rate: 0.25
+    requirement_clarity: 0.20
+    decision_reversibility: 0.15
+    risk_level: 0.15
+  always_autonomous:
+    - code_formatting
+    - variable_naming
+    - file_organization
+    - dependency_versions
+    - test_implementation
+    - error_messages
+    - documentation
+    - commit_messages
+  always_ask:
+    - payment_integration
+    - external_credentials
+    - production_deployment
+    - domain_names
+    - legal_compliance
+    - user_data_policies
+    - cost_decisions
+
+# =============================================================================
+# GitHub Integration
+# =============================================================================
+github:
+  auto_push: ${GITHUB_AUTO_PUSH:-true}
+  create_repos: true
+  default_visibility: "${GITHUB_DEFAULT_VISIBILITY:-private}"
+  sync_skills: true
+  sync_templates: true
+  sync_mcps: true
+  sync_on_milestone: true
+  main_repo: "clopus"  # Will be prefixed with username
+
+# =============================================================================
+# Services
+# =============================================================================
+services:
+  tier1:  # Always running
+    - postgres
+    - redis
+    - minio
+    - chromadb
+    - browser
+    - traefik
+    - mailhog
+    - prometheus
+    - grafana
+  tier2:  # On-demand (Docker profiles)
+    - mongodb
+    - mysql
+    - elasticsearch
+    - rabbitmq
+    - kafka
+    - wordpress
+    - keycloak
+    - temporal
+
+# =============================================================================
+# Email Configuration
+# =============================================================================
+email:
+  default_provider: "resend"  # resend | smtp | mailhog
+  providers:
+    resend:
+      api_key_env: "RESEND_API_KEY"
+    smtp:
+      host: "${SMTP_HOST:-smtp.gmail.com}"
+      port: ${SMTP_PORT:-587}
+      user_env: "SMTP_USER"
+      password_env: "SMTP_PASSWORD"
+      use_tls: true
+    mailhog:
+      host: "mailhog"
+      port: 1025
+
+# =============================================================================
+# Browser Configuration
+# =============================================================================
+browser:
+  mcp_enabled: true
+  container_enabled: true
+  vnc_port: ${VNC_PORT:-6080}
+  profiles_path: "./browser/profiles"
+  default_viewport:
+    width: 1920
+    height: 1080
+  screenshot_on_error: true
+  video_recording: false
+
+# =============================================================================
+# Interface Configuration
+# =============================================================================
+interfaces:
+  cli:
+    enabled: true
+    color: true
+    interactive: true
+  file:
+    enabled: true
+    watch_interval_ms: 1000
+    objectives_path: "./objectives"
+    questions_path: "./questions"
+    answers_path: "./answers"
+  webhook:
+    enabled: false
+    host: "0.0.0.0"
+    port: 8080
+    cors_origins:
+      - "http://localhost:3000"
+
+# =============================================================================
+# Skills Configuration
+# =============================================================================
+skills:
+  core_path: "./skills/core"
+  generated_path: "./skills/generated"
+  auto_generate: true
+  pattern_threshold: 3  # Generate skill after N similar solutions
+
+# =============================================================================
+# Templates Configuration
+# =============================================================================
+templates:
+  core_path: "./templates/core"
+  extracted_path: "./templates/extracted"
+  auto_extract: true
+
+# =============================================================================
+# MCP Servers Configuration
+# =============================================================================
+mcp_servers:
+  core_path: "./mcp-servers/core"
+  generated_path: "./mcp-servers/generated"
+  auto_generate: true
+  search_sources:
+    - local
+    - npm
+    - github
+
+# =============================================================================
+# Monitoring
+# =============================================================================
+monitoring:
+  prometheus:
+    enabled: true
+    port: 9090
+  grafana:
+    enabled: true
+    port: 3000
+  log_retention_days: 30
+  metrics_retention_days: 90

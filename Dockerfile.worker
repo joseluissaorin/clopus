@@ -1,0 +1,120 @@
+# =============================================================================
+# CLOPUS v3 Worker
+# =============================================================================
+# Claude Code worker container with full development capabilities
+
+FROM clopus-base:latest
+
+LABEL maintainer="CLOPUS Team"
+LABEL version="3.0.0"
+LABEL description="CLOPUS Claude Code Worker"
+
+# =============================================================================
+# Worker Configuration
+# =============================================================================
+WORKDIR /workspace
+
+# Copy worker configuration
+COPY workers/system-prompts/ /app/system-prompts/
+COPY workers/hooks/ /app/hooks/
+COPY skills/ /app/skills/
+
+# Make hooks executable
+RUN chmod +x /app/hooks/*.sh 2>/dev/null || true
+
+# =============================================================================
+# Claude Code Configuration
+# =============================================================================
+# Create Claude Code config directory
+RUN mkdir -p /root/.claude
+
+# Configure Claude Code hooks
+RUN mkdir -p /root/.claude/hooks
+
+# =============================================================================
+# IPC Directory
+# =============================================================================
+RUN mkdir -p /app/ipc
+
+# =============================================================================
+# Entry Point Script
+# =============================================================================
+COPY <<'EOF' /app/worker-entrypoint.sh
+#!/bin/bash
+set -e
+
+WORKER_ID=${WORKER_ID:-1}
+WORKER_ROLE=${WORKER_ROLE:-coder}
+IPC_PATH=${IPC_PATH:-/app/ipc}
+
+echo "[Worker $WORKER_ID] Starting as $WORKER_ROLE..."
+
+# Create IPC directories for this worker
+mkdir -p "$IPC_PATH/tasks/$WORKER_ID"
+
+# Initialize status
+echo '{"status": "idle", "role": "'$WORKER_ROLE'", "started_at": "'$(date -Iseconds)'"}' > "$IPC_PATH/tasks/$WORKER_ID/status.json"
+
+# Main loop - poll for tasks
+while true; do
+    PENDING_FILE="$IPC_PATH/tasks/$WORKER_ID/pending.json"
+
+    if [ -f "$PENDING_FILE" ]; then
+        echo "[Worker $WORKER_ID] Found pending task..."
+
+        # Update status to busy
+        echo '{"status": "busy", "role": "'$WORKER_ROLE'", "task_started": "'$(date -Iseconds)'"}' > "$IPC_PATH/tasks/$WORKER_ID/status.json"
+
+        # Read task
+        TASK=$(cat "$PENDING_FILE")
+        TASK_ID=$(echo "$TASK" | jq -r '.task_id')
+        TASK_PROMPT=$(echo "$TASK" | jq -r '.prompt')
+        TASK_CWD=$(echo "$TASK" | jq -r '.cwd // "/workspace"')
+
+        echo "[Worker $WORKER_ID] Executing task $TASK_ID..."
+
+        # Load role-specific system prompt if exists
+        SYSTEM_PROMPT_FILE="/app/system-prompts/$WORKER_ROLE.md"
+        BASE_PROMPT_FILE="/app/system-prompts/base.md"
+
+        SYSTEM_PROMPT=""
+        if [ -f "$BASE_PROMPT_FILE" ]; then
+            SYSTEM_PROMPT=$(cat "$BASE_PROMPT_FILE")
+        fi
+        if [ -f "$SYSTEM_PROMPT_FILE" ]; then
+            SYSTEM_PROMPT="$SYSTEM_PROMPT\n\n$(cat $SYSTEM_PROMPT_FILE)"
+        fi
+
+        # Run Claude Code
+        cd "$TASK_CWD"
+
+        # Execute Claude Code with the task
+        RESULT=$(claude --print "$TASK_PROMPT" 2>&1) || RESULT="Error: $?"
+
+        # Write result
+        echo "{\"task_id\": \"$TASK_ID\", \"status\": \"completed\", \"result\": $(echo "$RESULT" | jq -Rs .), \"completed_at\": \"$(date -Iseconds)\"}" > "$IPC_PATH/tasks/$WORKER_ID/result.json"
+
+        # Remove pending task
+        rm "$PENDING_FILE"
+
+        # Update status to idle
+        echo '{"status": "idle", "role": "'$WORKER_ROLE'", "last_task": "'$TASK_ID'", "updated_at": "'$(date -Iseconds)'"}' > "$IPC_PATH/tasks/$WORKER_ID/status.json"
+
+        echo "[Worker $WORKER_ID] Task $TASK_ID completed."
+    fi
+
+    # Poll interval
+    sleep 0.5
+done
+EOF
+
+RUN chmod +x /app/worker-entrypoint.sh
+
+# =============================================================================
+# Environment
+# =============================================================================
+ENV WORKER_ID=1
+ENV WORKER_ROLE=coder
+ENV IPC_PATH=/app/ipc
+
+CMD ["/app/worker-entrypoint.sh"]

@@ -1,0 +1,40 @@
+# =============================================================================
+# CLOPUS v3 Orchestrator
+# =============================================================================
+# Python-based orchestrator that coordinates all workers and services
+
+FROM clopus-base:latest
+
+LABEL maintainer="CLOPUS Team"
+LABEL version="3.0.0"
+LABEL description="CLOPUS Orchestrator"
+
+# =============================================================================
+# Python Dependencies for Orchestrator
+# =============================================================================
+COPY orchestrator/requirements.txt /tmp/orchestrator-requirements.txt
+RUN pip3 install --break-system-packages -r /tmp/orchestrator-requirements.txt
+
+# =============================================================================
+# Copy Application Code
+# =============================================================================
+WORKDIR /app
+
+COPY orchestrator/ ./orchestrator/
+COPY memory/ ./memory/
+COPY interfaces/ ./interfaces/
+COPY validation/ ./validation/
+COPY config.yaml ./config.yaml
+
+# =============================================================================
+# IPC Directory
+# =============================================================================
+RUN mkdir -p /app/ipc/tasks
+
+# =============================================================================
+# Entry Point
+# =============================================================================
+ENV PYTHONPATH=/app
+ENV PYTHONUNBUFFERED=1
+
+CMD ["python3", "-m", "orchestrator.main"]

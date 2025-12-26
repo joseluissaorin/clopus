@@ -1,0 +1,319 @@
+# =============================================================================
+# CLOPUS v3 Validation Pipeline
+# =============================================================================
+"""
+Orchestrates the 8-stage validation pipeline.
+"""
+
+import asyncio
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+from dataclasses import dataclass, field
+from enum import Enum
+import logging
+
+logger = logging.getLogger("clopus.validation")
+
+
+class ValidationStage(str, Enum):
+    SYNTAX = "syntax"
+    LINT = "lint"
+    BUILD = "build"
+    UNIT_TESTS = "unit_tests"
+    INTEGRATION_TESTS = "integration_tests"
+    E2E_TESTS = "e2e_tests"
+    SECURITY = "security"
+    REVIEW = "review"
+
+
+class ValidationStatus(str, Enum):
+    PENDING = "pending"
+    RUNNING = "running"
+    PASSED = "passed"
+    FAILED = "failed"
+    SKIPPED = "skipped"
+
+
+@dataclass
+class StageResult:
+    """Result of a single validation stage."""
+    stage: ValidationStage
+    status: ValidationStatus
+    duration_ms: int = 0
+    output: str = ""
+    errors: List[str] = field(default_factory=list)
+    warnings: List[str] = field(default_factory=list)
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class ValidationResult:
+    """Complete validation result."""
+    passed: bool
+    stages: List[StageResult]
+    total_duration_ms: int
+    started_at: datetime
+    completed_at: datetime
+    summary: str
+
+
+class ValidationPipeline:
+    """8-stage validation pipeline."""
+
+    def __init__(
+        self,
+        memory_client,
+        config,
+        worker_pool=None
+    ):
+        self.memory = memory_client
+        self.config = config
+        self.worker_pool = worker_pool
+        self.enabled_stages = config.enabled_stages
+        self.strict_mode = config.strict_mode
+        self.allow_warnings = config.allow_warnings
+        self.timeout_per_stage = config.timeout_per_stage_s
+
+        # Import stage handlers
+        from .stages import (
+            syntax, lint, build, unit_tests,
+            integration_tests, e2e_tests, security, review
+        )
+
+        self.stage_handlers = {
+            ValidationStage.SYNTAX: syntax.SyntaxValidator(),
+            ValidationStage.LINT: lint.LintValidator(),
+            ValidationStage.BUILD: build.BuildValidator(),
+            ValidationStage.UNIT_TESTS: unit_tests.UnitTestValidator(),
+            ValidationStage.INTEGRATION_TESTS: integration_tests.IntegrationTestValidator(),
+            ValidationStage.E2E_TESTS: e2e_tests.E2ETestValidator(),
+            ValidationStage.SECURITY: security.SecurityValidator(),
+            ValidationStage.REVIEW: review.ReviewValidator(worker_pool),
+        }
+
+    async def validate(
+        self,
+        project_path: str,
+        task_id: Optional[str] = None,
+        stages: Optional[List[ValidationStage]] = None
+    ) -> ValidationResult:
+        """Run validation pipeline on a project."""
+        start_time = datetime.now()
+        path = Path(project_path)
+
+        if not path.exists():
+            return ValidationResult(
+                passed=False,
+                stages=[],
+                total_duration_ms=0,
+                started_at=start_time,
+                completed_at=datetime.now(),
+                summary=f"Project path does not exist: {project_path}"
+            )
+
+        # Determine which stages to run
+        stages_to_run = stages or [
+            ValidationStage(s) for s in self.enabled_stages
+        ]
+
+        # Detect project type for stage configuration
+        project_type = self._detect_project_type(path)
+        logger.info(f"Validating {project_path} (type: {project_type})")
+
+        results = []
+        all_passed = True
+
+        for stage in stages_to_run:
+            if stage.value not in self.enabled_stages:
+                results.append(StageResult(
+                    stage=stage,
+                    status=ValidationStatus.SKIPPED
+                ))
+                continue
+
+            handler = self.stage_handlers.get(stage)
+            if not handler:
+                logger.warning(f"No handler for stage: {stage}")
+                continue
+
+            # Check if stage is applicable
+            if not handler.is_applicable(path, project_type):
+                results.append(StageResult(
+                    stage=stage,
+                    status=ValidationStatus.SKIPPED,
+                    output=f"Stage not applicable for {project_type}"
+                ))
+                continue
+
+            # Run stage with timeout
+            try:
+                logger.info(f"Running stage: {stage.value}")
+                stage_start = datetime.now()
+
+                result = await asyncio.wait_for(
+                    handler.validate(path, project_type),
+                    timeout=self.timeout_per_stage
+                )
+
+                result.duration_ms = int(
+                    (datetime.now() - stage_start).total_seconds() * 1000
+                )
+                results.append(result)
+
+                # Check if stage passed
+                if result.status == ValidationStatus.FAILED:
+                    all_passed = False
+
+                    # In strict mode, stop on first failure
+                    if self.strict_mode:
+                        logger.warning(f"Stage {stage.value} failed, stopping pipeline")
+                        break
+
+                # Check warnings in strict mode
+                if not self.allow_warnings and result.warnings:
+                    all_passed = False
+
+                # Store result in memory
+                if task_id:
+                    await self.memory.short_term.log_activity(
+                        source="validation",
+                        action=f"stage_{stage.value}",
+                        details={
+                            "status": result.status.value,
+                            "errors": len(result.errors),
+                            "warnings": len(result.warnings)
+                        },
+                        task_id=task_id
+                    )
+
+            except asyncio.TimeoutError:
+                results.append(StageResult(
+                    stage=stage,
+                    status=ValidationStatus.FAILED,
+                    errors=[f"Stage timed out after {self.timeout_per_stage}s"]
+                ))
+                all_passed = False
+
+                if self.strict_mode:
+                    break
+
+            except Exception as e:
+                logger.error(f"Error in stage {stage.value}: {e}")
+                results.append(StageResult(
+                    stage=stage,
+                    status=ValidationStatus.FAILED,
+                    errors=[str(e)]
+                ))
+                all_passed = False
+
+                if self.strict_mode:
+                    break
+
+        end_time = datetime.now()
+        total_ms = int((end_time - start_time).total_seconds() * 1000)
+
+        # Generate summary
+        summary = self._generate_summary(results, all_passed)
+
+        return ValidationResult(
+            passed=all_passed,
+            stages=results,
+            total_duration_ms=total_ms,
+            started_at=start_time,
+            completed_at=end_time,
+            summary=summary
+        )
+
+    def _detect_project_type(self, path: Path) -> str:
+        """Detect the type of project."""
+        # Check for common project files
+        if (path / "package.json").exists():
+            package = (path / "package.json").read_text()
+            if "next" in package:
+                return "nextjs"
+            elif "expo" in package:
+                return "expo"
+            elif "react" in package:
+                return "react"
+            elif "vue" in package:
+                return "vue"
+            return "nodejs"
+
+        if (path / "pyproject.toml").exists() or (path / "setup.py").exists():
+            if (path / "manage.py").exists():
+                return "django"
+            return "python"
+
+        if (path / "Cargo.toml").exists():
+            return "rust"
+
+        if (path / "go.mod").exists():
+            return "go"
+
+        if (path / "composer.json").exists():
+            return "php"
+
+        if (path / "Gemfile").exists():
+            return "ruby"
+
+        return "unknown"
+
+    def _generate_summary(
+        self,
+        results: List[StageResult],
+        passed: bool
+    ) -> str:
+        """Generate a validation summary."""
+        lines = []
+
+        status_emoji = "✓" if passed else "✗"
+        lines.append(f"{status_emoji} Validation {'PASSED' if passed else 'FAILED'}")
+        lines.append("")
+
+        for result in results:
+            if result.status == ValidationStatus.PASSED:
+                lines.append(f"  ✓ {result.stage.value}: passed ({result.duration_ms}ms)")
+            elif result.status == ValidationStatus.FAILED:
+                lines.append(f"  ✗ {result.stage.value}: FAILED")
+                for error in result.errors[:3]:
+                    lines.append(f"      - {error[:80]}")
+            elif result.status == ValidationStatus.SKIPPED:
+                lines.append(f"  ○ {result.stage.value}: skipped")
+
+            if result.warnings:
+                lines.append(f"      ⚠ {len(result.warnings)} warning(s)")
+
+        return "\n".join(lines)
+
+    async def validate_file(
+        self,
+        file_path: str,
+        stages: Optional[List[ValidationStage]] = None
+    ) -> ValidationResult:
+        """Validate a single file."""
+        path = Path(file_path)
+        project_path = path.parent
+
+        # Run subset of stages for single file
+        file_stages = stages or [
+            ValidationStage.SYNTAX,
+            ValidationStage.LINT
+        ]
+
+        return await self.validate(
+            str(project_path),
+            stages=file_stages
+        )
+
+    async def quick_check(self, project_path: str) -> Tuple[bool, str]:
+        """Quick validation check (syntax + lint only)."""
+        result = await self.validate(
+            project_path,
+            stages=[ValidationStage.SYNTAX, ValidationStage.LINT]
+        )
+        return result.passed, result.summary
+
+    async def full_check(self, project_path: str) -> ValidationResult:
+        """Full validation with all stages."""
+        return await self.validate(project_path)

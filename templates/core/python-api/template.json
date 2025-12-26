@@ -1,0 +1,39 @@
+{
+  "name": "python-api",
+  "description": "Production-ready FastAPI backend with database, auth, and testing",
+  "version": "1.0.0",
+  "type": "python",
+  "author": "CLOPUS",
+  "parameters": {
+    "PROJECT_NAME": {
+      "description": "Project name",
+      "default": "my-api",
+      "required": true
+    },
+    "DESCRIPTION": {
+      "description": "Project description",
+      "default": "A FastAPI backend",
+      "required": false
+    },
+    "DATABASE_URL": {
+      "description": "Database connection string",
+      "default": "postgresql://localhost/mydb",
+      "required": true
+    }
+  },
+  "technologies": [
+    "python",
+    "fastapi",
+    "sqlalchemy",
+    "alembic",
+    "pytest",
+    "docker"
+  ],
+  "features": [
+    "authentication",
+    "database",
+    "migrations",
+    "testing",
+    "docker"
+  ]
+}

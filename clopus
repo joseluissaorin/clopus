@@ -1,0 +1,563 @@
+#!/usr/bin/env bash
+# =============================================================================
+# CLOPUS v3 - Claude Orchestrated Parallel Universal System
+# =============================================================================
+# Main CLI entrypoint
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+VERSION="3.0.0"
+
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+BLUE='\033[0;34m'
+MAGENTA='\033[0;35m'
+CYAN='\033[0;36m'
+NC='\033[0m' # No Color
+BOLD='\033[1m'
+
+# Logging functions
+log_info() { echo -e "${BLUE}[INFO]${NC} $*"; }
+log_success() { echo -e "${GREEN}[SUCCESS]${NC} $*"; }
+log_warning() { echo -e "${YELLOW}[WARNING]${NC} $*"; }
+log_error() { echo -e "${RED}[ERROR]${NC} $*" >&2; }
+
+# Banner
+show_banner() {
+    echo -e "${CYAN}${BOLD}"
+    cat << 'EOF'
+   ____ _     ___  ____  _   _ ____
+  / ___| |   / _ \|  _ \| | | / ___|
+ | |   | |  | | | | |_) | | | \___ \
+ | |___| |__| |_| |  __/| |_| |___) |
+  \____|_____\___/|_|    \___/|____/
+
+  Claude Orchestrated Parallel Universal System
+EOF
+    echo -e "${NC}"
+    echo -e "  Version ${VERSION}"
+    echo ""
+}
+
+# Help function
+show_help() {
+    show_banner
+    cat << EOF
+${BOLD}USAGE:${NC}
+    ./clopus <command> [options]
+
+${BOLD}COMMANDS:${NC}
+    ${GREEN}start${NC}              Start CLOPUS system
+    ${GREEN}stop${NC}               Stop CLOPUS system
+    ${GREEN}restart${NC}            Restart CLOPUS system
+    ${GREEN}status${NC}             Show system status
+
+    ${GREEN}objective${NC} <text>   Give CLOPUS an objective
+    ${GREEN}questions${NC}          List pending questions
+    ${GREEN}answer${NC} <id> <text> Answer a question
+
+    ${GREEN}workers${NC}            List worker status
+    ${GREEN}projects${NC}           List active projects
+    ${GREEN}logs${NC}               View system logs
+
+    ${GREEN}skills${NC}             List available skills
+    ${GREEN}templates${NC}          List available templates
+    ${GREEN}mcps${NC}               List MCP servers
+
+    ${GREEN}memory${NC}             Memory operations
+    ${GREEN}sync${NC}               Sync to GitHub
+
+    ${GREEN}login${NC}              Authenticate with Claude
+    ${GREEN}logout${NC}             Clear authentication
+
+    ${GREEN}setup${NC}              Run initial setup
+    ${GREEN}update${NC}             Update CLOPUS
+    ${GREEN}version${NC}            Show version
+    ${GREEN}help${NC}               Show this help
+
+${BOLD}EXAMPLES:${NC}
+    ./clopus start
+    ./clopus objective "Build a todo app with React and FastAPI"
+    ./clopus status --watch
+    ./clopus logs -f
+
+${BOLD}DOCUMENTATION:${NC}
+    https://github.com/yourusername/clopus
+EOF
+}
+
+# Check dependencies
+check_dependencies() {
+    local missing=()
+
+    command -v docker &>/dev/null || missing+=("docker")
+    command -v docker-compose &>/dev/null && command -v docker compose &>/dev/null || true
+    command -v git &>/dev/null || missing+=("git")
+    command -v gh &>/dev/null || missing+=("gh")
+    command -v jq &>/dev/null || missing+=("jq")
+
+    if [ ${#missing[@]} -gt 0 ]; then
+        log_error "Missing dependencies: ${missing[*]}"
+        log_info "Please install them and try again."
+        exit 1
+    fi
+}
+
+# Docker compose command wrapper
+dc() {
+    if command -v docker compose &>/dev/null; then
+        docker compose "$@"
+    else
+        docker-compose "$@"
+    fi
+}
+
+# Start command
+cmd_start() {
+    local workers=${1:-5}
+
+    log_info "Starting CLOPUS with $workers workers..."
+
+    # Check .env file
+    if [ ! -f "$SCRIPT_DIR/.env" ]; then
+        log_error ".env file not found. Run './clopus setup' first."
+        exit 1
+    fi
+
+    # Build base image first
+    log_info "Building base image..."
+    docker build -t clopus-base:latest -f "$SCRIPT_DIR/Dockerfile.base" "$SCRIPT_DIR"
+
+    # Start services
+    log_info "Starting services..."
+    cd "$SCRIPT_DIR"
+    dc up -d
+
+    log_success "CLOPUS started successfully!"
+    log_info "Browser VNC: http://localhost:6080"
+    log_info "Grafana: http://localhost:3000"
+    log_info "Mailhog: http://localhost:8025"
+}
+
+# Stop command
+cmd_stop() {
+    log_info "Stopping CLOPUS..."
+    cd "$SCRIPT_DIR"
+    dc down
+    log_success "CLOPUS stopped."
+}
+
+# Restart command
+cmd_restart() {
+    cmd_stop
+    cmd_start "$@"
+}
+
+# Status command
+cmd_status() {
+    local watch=false
+
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            --watch|-w)
+                watch=true
+                shift
+                ;;
+            *)
+                shift
+                ;;
+        esac
+    done
+
+    show_status() {
+        echo -e "\n${BOLD}=== CLOPUS Status ===${NC}\n"
+
+        # Docker containers
+        echo -e "${CYAN}Containers:${NC}"
+        dc ps --format "table {{.Name}}\t{{.Status}}\t{{.Ports}}" 2>/dev/null || echo "  Not running"
+
+        # Workers
+        echo -e "\n${CYAN}Workers:${NC}"
+        for i in 1 2 3 4 5; do
+            status_file="$SCRIPT_DIR/ipc/tasks/$i/status.json"
+            if [ -f "$status_file" ]; then
+                status=$(cat "$status_file" | jq -r '.status // "unknown"')
+                role=$(cat "$status_file" | jq -r '.role // "unknown"')
+                echo "  Worker $i: $status ($role)"
+            else
+                echo "  Worker $i: not initialized"
+            fi
+        done
+
+        # Pending objectives
+        echo -e "\n${CYAN}Objectives:${NC}"
+        obj_count=$(ls -1 "$SCRIPT_DIR/objectives"/*.md 2>/dev/null | wc -l || echo 0)
+        echo "  Pending: $obj_count"
+
+        # Questions
+        echo -e "\n${CYAN}Questions:${NC}"
+        q_count=$(ls -1 "$SCRIPT_DIR/questions"/*.md 2>/dev/null | wc -l || echo 0)
+        echo "  Pending: $q_count"
+    }
+
+    if $watch; then
+        while true; do
+            clear
+            show_status
+            sleep 2
+        done
+    else
+        show_status
+    fi
+}
+
+# Objective command
+cmd_objective() {
+    if [ $# -eq 0 ]; then
+        log_error "Please provide an objective."
+        echo "Usage: ./clopus objective \"Build a todo app\""
+        exit 1
+    fi
+
+    local objective="$*"
+    local timestamp=$(date +%Y%m%d_%H%M%S)
+    local filename="$SCRIPT_DIR/objectives/${timestamp}.md"
+
+    cat > "$filename" << EOF
+# Objective
+
+$objective
+
+---
+Created: $(date -Iseconds)
+EOF
+
+    log_success "Objective created: $filename"
+    log_info "CLOPUS will pick this up automatically."
+}
+
+# Questions command
+cmd_questions() {
+    echo -e "\n${BOLD}=== Pending Questions ===${NC}\n"
+
+    for file in "$SCRIPT_DIR/questions"/*.md; do
+        if [ -f "$file" ]; then
+            id=$(basename "$file" .md)
+            echo -e "${CYAN}[$id]${NC}"
+            cat "$file"
+            echo -e "\n---\n"
+        fi
+    done
+
+    if [ ! "$(ls -A "$SCRIPT_DIR/questions"/*.md 2>/dev/null)" ]; then
+        echo "  No pending questions."
+    fi
+}
+
+# Answer command
+cmd_answer() {
+    if [ $# -lt 2 ]; then
+        log_error "Please provide question ID and answer."
+        echo "Usage: ./clopus answer <id> \"Your answer\""
+        exit 1
+    fi
+
+    local id="$1"
+    shift
+    local answer="$*"
+
+    local answer_file="$SCRIPT_DIR/answers/${id}.md"
+
+    cat > "$answer_file" << EOF
+# Answer
+
+$answer
+
+---
+Answered: $(date -Iseconds)
+EOF
+
+    # Remove question file if exists
+    rm -f "$SCRIPT_DIR/questions/${id}.md"
+
+    log_success "Answer saved for question $id"
+}
+
+# Workers command
+cmd_workers() {
+    echo -e "\n${BOLD}=== Worker Status ===${NC}\n"
+
+    printf "%-10s %-10s %-15s %s\n" "WORKER" "STATUS" "ROLE" "LAST UPDATE"
+    echo "-------------------------------------------"
+
+    for i in 1 2 3 4 5; do
+        status_file="$SCRIPT_DIR/ipc/tasks/$i/status.json"
+        if [ -f "$status_file" ]; then
+            status=$(cat "$status_file" | jq -r '.status // "unknown"')
+            role=$(cat "$status_file" | jq -r '.role // "unknown"')
+            updated=$(cat "$status_file" | jq -r '.updated_at // .started_at // "unknown"')
+            printf "%-10s %-10s %-15s %s\n" "Worker $i" "$status" "$role" "$updated"
+        else
+            printf "%-10s %-10s %-15s %s\n" "Worker $i" "offline" "-" "-"
+        fi
+    done
+}
+
+# Logs command
+cmd_logs() {
+    local follow=false
+    local worker=""
+
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            -f|--follow)
+                follow=true
+                shift
+                ;;
+            --worker)
+                worker="$2"
+                shift 2
+                ;;
+            *)
+                shift
+                ;;
+        esac
+    done
+
+    cd "$SCRIPT_DIR"
+
+    if [ -n "$worker" ]; then
+        if $follow; then
+            dc logs -f "worker-$worker"
+        else
+            dc logs "worker-$worker"
+        fi
+    else
+        if $follow; then
+            dc logs -f
+        else
+            dc logs
+        fi
+    fi
+}
+
+# Skills command
+cmd_skills() {
+    echo -e "\n${BOLD}=== Available Skills ===${NC}\n"
+
+    echo -e "${CYAN}Core Skills:${NC}"
+    find "$SCRIPT_DIR/skills/core" -name "SKILL.md" 2>/dev/null | while read -r skill; do
+        dir=$(dirname "$skill")
+        name=$(basename "$dir")
+        category=$(basename "$(dirname "$dir")")
+        echo "  $category/$name"
+    done
+
+    echo -e "\n${CYAN}Generated Skills:${NC}"
+    find "$SCRIPT_DIR/skills/generated" -name "SKILL.md" 2>/dev/null | while read -r skill; do
+        dir=$(dirname "$skill")
+        name=$(basename "$dir")
+        echo "  $name"
+    done || echo "  (none)"
+}
+
+# Templates command
+cmd_templates() {
+    echo -e "\n${BOLD}=== Available Templates ===${NC}\n"
+
+    echo -e "${CYAN}Core Templates:${NC}"
+    for dir in "$SCRIPT_DIR/templates/core"/*/; do
+        if [ -d "$dir" ]; then
+            name=$(basename "$dir")
+            echo "  $name"
+        fi
+    done
+
+    echo -e "\n${CYAN}Extracted Templates:${NC}"
+    for dir in "$SCRIPT_DIR/templates/extracted"/*/; do
+        if [ -d "$dir" ]; then
+            name=$(basename "$dir")
+            echo "  $name"
+        fi
+    done 2>/dev/null || echo "  (none)"
+}
+
+# Setup command
+cmd_setup() {
+    show_banner
+    log_info "Running CLOPUS setup..."
+
+    check_dependencies
+
+    # Create .env if not exists
+    if [ ! -f "$SCRIPT_DIR/.env" ]; then
+        log_info "Creating .env file..."
+        cp "$SCRIPT_DIR/.env.example" "$SCRIPT_DIR/.env"
+
+        # Prompt for API key
+        echo ""
+        read -p "Enter your Anthropic API Key (or press Enter to skip): " api_key
+        if [ -n "$api_key" ]; then
+            sed -i "s/ANTHROPIC_API_KEY=.*/ANTHROPIC_API_KEY=$api_key/" "$SCRIPT_DIR/.env"
+        fi
+    fi
+
+    # Create necessary directories
+    mkdir -p "$SCRIPT_DIR"/{data/{sqlite,chromadb,postgres,redis,minio},logs,ipc/tasks,objectives,questions,answers,output}
+
+    # Create .gitkeep files
+    touch "$SCRIPT_DIR/skills/generated/.gitkeep"
+    touch "$SCRIPT_DIR/mcp-servers/generated/.gitkeep"
+    touch "$SCRIPT_DIR/templates/extracted/.gitkeep"
+    touch "$SCRIPT_DIR/tools/generated/.gitkeep"
+    touch "$SCRIPT_DIR/browser/profiles/.gitkeep"
+
+    # Check anthropic session directory
+    mkdir -p "$HOME/.anthropic"
+
+    log_success "Setup complete!"
+    log_info "Edit .env to configure your settings, then run './clopus start'"
+}
+
+# Login command
+cmd_login() {
+    log_info "Authenticating with Claude..."
+
+    # Run Claude Code login
+    if command -v claude &>/dev/null; then
+        claude login
+    else
+        log_error "Claude Code CLI not found. Install with: npm install -g @anthropic-ai/claude-code"
+        exit 1
+    fi
+}
+
+# Version command
+cmd_version() {
+    echo "CLOPUS v$VERSION"
+}
+
+# Sync command
+cmd_sync() {
+    log_info "Syncing to GitHub..."
+
+    cd "$SCRIPT_DIR"
+
+    # Skills
+    if [ -d "$SCRIPT_DIR/skills/generated" ] && [ "$(ls -A "$SCRIPT_DIR/skills/generated" 2>/dev/null)" ]; then
+        log_info "Syncing generated skills..."
+        git add skills/generated/
+        git commit -m "chore: sync generated skills" || true
+    fi
+
+    # Templates
+    if [ -d "$SCRIPT_DIR/templates/extracted" ] && [ "$(ls -A "$SCRIPT_DIR/templates/extracted" 2>/dev/null)" ]; then
+        log_info "Syncing extracted templates..."
+        git add templates/extracted/
+        git commit -m "chore: sync extracted templates" || true
+    fi
+
+    # MCPs
+    if [ -d "$SCRIPT_DIR/mcp-servers/generated" ] && [ "$(ls -A "$SCRIPT_DIR/mcp-servers/generated" 2>/dev/null)" ]; then
+        log_info "Syncing generated MCPs..."
+        git add mcp-servers/generated/
+        git commit -m "chore: sync generated MCPs" || true
+    fi
+
+    # Push
+    git push || log_warning "Failed to push. Please push manually."
+
+    log_success "Sync complete!"
+}
+
+# Main
+main() {
+    # Ensure we're in the script directory
+    cd "$SCRIPT_DIR"
+
+    # Parse command
+    case "${1:-help}" in
+        start)
+            shift
+            cmd_start "$@"
+            ;;
+        stop)
+            cmd_stop
+            ;;
+        restart)
+            shift
+            cmd_restart "$@"
+            ;;
+        status)
+            shift
+            cmd_status "$@"
+            ;;
+        objective|obj)
+            shift
+            cmd_objective "$@"
+            ;;
+        questions|q)
+            cmd_questions
+            ;;
+        answer|a)
+            shift
+            cmd_answer "$@"
+            ;;
+        workers|w)
+            cmd_workers
+            ;;
+        projects|p)
+            log_info "Projects command not yet implemented"
+            ;;
+        logs|l)
+            shift
+            cmd_logs "$@"
+            ;;
+        skills)
+            cmd_skills
+            ;;
+        templates)
+            cmd_templates
+            ;;
+        mcps)
+            log_info "MCPs command not yet implemented"
+            ;;
+        memory)
+            log_info "Memory command not yet implemented"
+            ;;
+        sync)
+            cmd_sync
+            ;;
+        login)
+            cmd_login
+            ;;
+        logout)
+            rm -rf "$HOME/.anthropic/session.json"
+            log_success "Logged out."
+            ;;
+        setup)
+            cmd_setup
+            ;;
+        update)
+            log_info "Pulling latest changes..."
+            git pull
+            log_success "Updated!"
+            ;;
+        version|-v|--version)
+            cmd_version
+            ;;
+        help|-h|--help)
+            show_help
+            ;;
+        *)
+            log_error "Unknown command: $1"
+            echo "Run './clopus help' for usage information."
+            exit 1
+            ;;
+    esac
+}
+
+main "$@"
