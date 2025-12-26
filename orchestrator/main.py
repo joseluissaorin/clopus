@@ -23,6 +23,10 @@ from .status_reporter import StatusReporter
 from .user_interaction import UserInteractionHandler
 from .github_sync import GitHubSync
 from .service_manager import ServiceManager
+from .skills_engine import SkillsEngine
+from .mcp_generator import MCPGenerator
+from .template_extractor import TemplateExtractor
+from validation.pipeline import ValidationPipeline
 
 # Configure logging
 logging.basicConfig(
@@ -50,6 +54,12 @@ class Orchestrator:
         self.user_interaction: Optional[UserInteractionHandler] = None
         self.github_sync: Optional[GitHubSync] = None
         self.service_manager: Optional[ServiceManager] = None
+
+        # Self-generating ecosystem components
+        self.skills_engine: Optional[SkillsEngine] = None
+        self.mcp_generator: Optional[MCPGenerator] = None
+        self.template_extractor: Optional[TemplateExtractor] = None
+        self.validation_pipeline: Optional[ValidationPipeline] = None
 
     async def initialize(self) -> None:
         """Initialize all components."""
@@ -120,6 +130,37 @@ class Orchestrator:
         # Initialize service manager
         self.service_manager = ServiceManager(self.settings.services_config)
         logger.info("Service manager initialized")
+
+        # Initialize self-generating ecosystem components
+        self.skills_engine = SkillsEngine(
+            self.memory,
+            self.github_sync,
+            self.settings.skills_path
+        )
+        await self.skills_engine.discover_skills()
+        logger.info("Skills engine initialized")
+
+        self.mcp_generator = MCPGenerator(
+            self.memory,
+            self.github_sync,
+            self.worker_pool,
+            self.settings.mcp_servers_path
+        )
+        logger.info("MCP generator initialized")
+
+        self.template_extractor = TemplateExtractor(
+            self.memory,
+            self.github_sync,
+            self.settings.templates_path
+        )
+        logger.info("Template extractor initialized")
+
+        self.validation_pipeline = ValidationPipeline(
+            self.memory,
+            self.settings.validation_config,
+            self.worker_pool
+        )
+        logger.info("Validation pipeline initialized")
 
         logger.info("CLOPUS orchestrator fully initialized")
 
@@ -396,9 +437,14 @@ class Orchestrator:
                             result.get("error")
                         )
 
-                        # Check if objective is complete
+                        # Get task details for validation
                         task = await self.memory.short_term.get_task(task_id)
                         if task:
+                            # Run validation on completed coding tasks
+                            if success and task.worker_role in ("coder", "tester"):
+                                await self._run_validation(task)
+
+                            # Check if objective is complete
                             objective_tasks = await self.memory.short_term.get_tasks_for_objective(
                                 task.objective_id
                             )
@@ -415,6 +461,10 @@ class Orchestrator:
                                     task.objective_id,
                                     success=all_success
                                 )
+
+                                # Extract template from successful projects
+                                if all_success:
+                                    await self._extract_template_if_applicable(task.objective_id)
 
                 # Update worker heartbeats
                 await self.worker_pool.check_heartbeats()
@@ -441,6 +491,162 @@ class Orchestrator:
             except Exception as e:
                 logger.error(f"Error in status loop: {e}")
                 await asyncio.sleep(5)
+
+    # =========================================================================
+    # VALIDATION & SELF-GENERATING ECOSYSTEM
+    # =========================================================================
+
+    async def _run_validation(self, task) -> None:
+        """Run validation pipeline on completed task."""
+        try:
+            # Determine project path from task context
+            project_path = "/workspace"  # Default
+
+            # Try to extract path from task result or metadata
+            if task.result and isinstance(task.result, str):
+                # Look for path patterns in result
+                import re
+                path_match = re.search(r'/workspace/[\w\-/]+', task.result)
+                if path_match:
+                    project_path = path_match.group(0).rsplit('/', 1)[0]
+
+            logger.info(f"Running validation on {project_path} for task {task.id}")
+
+            # Run validation pipeline
+            result = await self.validation_pipeline.validate(
+                project_path=project_path,
+                task_id=task.id
+            )
+
+            # Log validation result
+            if result.passed:
+                logger.info(f"Validation passed for task {task.id}: {result.summary}")
+                await self.memory.log_activity(
+                    source="validation",
+                    action="passed",
+                    details={"task_id": task.id, "summary": result.summary}
+                )
+            else:
+                logger.warning(f"Validation failed for task {task.id}: {result.summary}")
+                await self.memory.log_activity(
+                    source="validation",
+                    action="failed",
+                    details={
+                        "task_id": task.id,
+                        "summary": result.summary,
+                        "stages": [
+                            {
+                                "stage": s.stage.value if hasattr(s.stage, 'value') else str(s.stage),
+                                "status": s.status.value if hasattr(s.status, 'value') else str(s.status)
+                            }
+                            for s in result.stages
+                        ]
+                    }
+                )
+
+                # Store learning about failure pattern
+                await self.memory.long_term.store(
+                    memory_type="learning",
+                    content=f"Validation failure: {result.summary}",
+                    metadata={
+                        "type": "validation_failure",
+                        "task_id": task.id,
+                        "stages_failed": [
+                            s.stage.value if hasattr(s.stage, 'value') else str(s.stage)
+                            for s in result.stages
+                            if (s.status.value if hasattr(s.status, 'value') else str(s.status)) == "failed"
+                        ]
+                    }
+                )
+
+        except Exception as e:
+            logger.error(f"Error running validation: {e}")
+
+    async def _extract_template_if_applicable(self, objective_id: str) -> None:
+        """Extract a template from completed objective if applicable."""
+        try:
+            objective = await self.memory.short_term.get_objective(objective_id)
+            if not objective:
+                return
+
+            # Check if this looks like a project creation task
+            content_lower = objective.content.lower()
+            is_project = any(
+                keyword in content_lower
+                for keyword in ["create", "build", "develop", "implement", "make"]
+            )
+
+            if not is_project:
+                return
+
+            # Determine project path (try to infer from objective)
+            import re
+            path_match = re.search(r'/workspace/([\w\-]+)', objective.content)
+            if path_match:
+                project_name = path_match.group(1)
+                project_path = f"/workspace/{project_name}"
+            else:
+                # Try common project directories
+                from pathlib import Path
+                workspace = Path("/workspace")
+                recent_dirs = sorted(
+                    [d for d in workspace.iterdir() if d.is_dir()],
+                    key=lambda x: x.stat().st_mtime,
+                    reverse=True
+                )
+                if recent_dirs:
+                    project_path = str(recent_dirs[0])
+                    project_name = recent_dirs[0].name
+                else:
+                    return
+
+            # Generate template name
+            template_name = f"template-{project_name}"
+
+            logger.info(f"Extracting template '{template_name}' from {project_path}")
+
+            # Extract template
+            result = await self.template_extractor.extract_template(
+                project_path=project_path,
+                template_name=template_name,
+                description=f"Template extracted from: {objective.content[:100]}"
+            )
+
+            if result:
+                logger.info(f"Template extracted successfully: {template_name}")
+                await self.memory.log_activity(
+                    source="template_extractor",
+                    action="extracted",
+                    details={"template_name": template_name, "source": project_path}
+                )
+
+                # Store as learning
+                await self.memory.long_term.store(
+                    memory_type="skill",
+                    content=f"Template: {template_name} - Extracted from {project_path}",
+                    metadata={
+                        "type": "template",
+                        "name": template_name,
+                        "source": project_path
+                    }
+                )
+
+        except Exception as e:
+            logger.error(f"Error extracting template: {e}")
+
+    async def _find_skill_for_task(self, task_description: str) -> Optional[dict]:
+        """Find a matching skill for a task."""
+        if not self.skills_engine:
+            return None
+
+        try:
+            skill = await self.skills_engine.find_skill_for_task(task_description)
+            if skill:
+                logger.info(f"Found skill '{skill.get('name')}' for task")
+            return skill
+        except Exception as e:
+            logger.error(f"Error finding skill: {e}")
+            return None
 
 
 async def main():

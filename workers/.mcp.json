@@ -1,0 +1,76 @@
+{
+  "mcpServers": {
+    "browser": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["/app/mcp-servers/core/browser/dist/index.js"],
+      "env": {
+        "BROWSER_HOST": "${BROWSER_HOST:-browser}",
+        "BROWSER_PORT": "${BROWSER_PORT:-9222}"
+      }
+    },
+    "memory": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["/app/mcp-servers/core/memory/dist/index.js"],
+      "env": {
+        "CHROMADB_HOST": "${CHROMADB_HOST:-chromadb}",
+        "CHROMADB_PORT": "${CHROMADB_PORT:-8000}",
+        "SQLITE_PATH": "${SQLITE_PATH:-/app/data/sqlite/clopus.db}"
+      }
+    },
+    "validation": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["/app/mcp-servers/core/validation/dist/index.js"],
+      "env": {
+        "PROJECT_PATH": "/workspace"
+      }
+    },
+    "github": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["/app/mcp-servers/core/github/dist/index.js"],
+      "env": {
+        "GITHUB_TOKEN": "${GITHUB_TOKEN}"
+      }
+    },
+    "database-postgres": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["/app/mcp-servers/core/database-postgres/dist/index.js"],
+      "env": {
+        "POSTGRES_HOST": "${POSTGRES_HOST:-postgres}",
+        "POSTGRES_PORT": "${POSTGRES_PORT:-5432}",
+        "POSTGRES_USER": "${POSTGRES_USER:-clopus}",
+        "POSTGRES_PASSWORD": "${POSTGRES_PASSWORD:-clopus}",
+        "POSTGRES_DB": "${POSTGRES_DB:-clopus}"
+      }
+    },
+    "database-redis": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["/app/mcp-servers/core/database-redis/dist/index.js"],
+      "env": {
+        "REDIS_HOST": "${REDIS_HOST:-redis}",
+        "REDIS_PORT": "${REDIS_PORT:-6379}"
+      }
+    },
+    "storage-s3": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["/app/mcp-servers/core/storage-s3/dist/index.js"],
+      "env": {
+        "MINIO_HOST": "${MINIO_HOST:-minio}",
+        "MINIO_PORT": "${MINIO_PORT:-9000}",
+        "MINIO_ACCESS_KEY": "${MINIO_ACCESS_KEY:-minioadmin}",
+        "MINIO_SECRET_KEY": "${MINIO_SECRET_KEY:-minioadmin}"
+      }
+    },
+    "search": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["/app/mcp-servers/core/search/dist/index.js"]
+    }
+  }
+}

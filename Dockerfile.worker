@@ -25,6 +25,13 @@ COPY --chown=ubuntu:ubuntu workers/system-prompts/ /app/system-prompts/
 COPY --chown=ubuntu:ubuntu workers/hooks/ /app/hooks/
 COPY --chown=ubuntu:ubuntu skills/ /app/skills/
 
+# Copy MCP servers and build them
+COPY --chown=ubuntu:ubuntu mcp-servers/ /app/mcp-servers/
+RUN cd /app/mcp-servers && chmod +x build-all.sh && ./build-all.sh 2>/dev/null || true
+
+# Copy MCP configuration for Claude Code
+COPY --chown=ubuntu:ubuntu workers/.mcp.json /workspace/.mcp.json
+
 # Make hooks executable
 RUN chmod +x /app/hooks/*.sh 2>/dev/null || true
 

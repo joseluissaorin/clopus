@@ -23,12 +23,28 @@ x-worker-common: &worker-common
     - ./skills:/app/skills:ro
     - ./workers/system-prompts:/app/system-prompts:ro
     - ./workers/hooks:/app/hooks:ro
+    - ./mcp-servers:/app/mcp-servers:ro
+    - ./workers/.mcp.json:/workspace/.mcp.json:ro
   environment:
     <<: *common-env
     IPC_PATH: /app/ipc
+    BROWSER_HOST: browser
+    BROWSER_PORT: 9222
+    CHROMADB_HOST: chromadb
+    CHROMADB_PORT: 8000
+    POSTGRES_HOST: postgres
+    POSTGRES_PORT: 5432
+    POSTGRES_USER: ${POSTGRES_USER:-clopus}
+    POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-clopus}
+    POSTGRES_DB: ${POSTGRES_DB:-clopus}
+    REDIS_HOST: redis
+    REDIS_PORT: 6379
+    MINIO_HOST: minio
+    MINIO_PORT: 9000
   depends_on:
     - chromadb
     - redis
+    - browser
   networks:
     - clopus-network
   restart: unless-stopped

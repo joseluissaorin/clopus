@@ -9,7 +9,16 @@ WORKER_ROLE=${WORKER_ROLE:-coder}
 IPC_PATH=${IPC_PATH:-/app/ipc}
 AUTH_MODE=${AUTH_MODE:-oauth}
 
+# MCP configuration
+export MCP_TIMEOUT=${MCP_TIMEOUT:-15000}
+export MAX_MCP_OUTPUT_TOKENS=${MAX_MCP_OUTPUT_TOKENS:-50000}
+
 echo "[Worker $WORKER_ID] Starting as $WORKER_ROLE..."
+
+# Check for MCP configuration
+if [ -f "/workspace/.mcp.json" ]; then
+    echo "[Worker $WORKER_ID] MCP servers configured from .mcp.json"
+fi
 
 # =============================================================================
 # Authentication Setup
