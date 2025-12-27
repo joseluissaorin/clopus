@@ -700,6 +700,14 @@ class Orchestrator:
                                 logger.warning(f"Error learning from outcome: {e}")
 
                             # =============================================================
+                            # UPDATE PROJECT STATE ON TASK COMPLETION
+                            # =============================================================
+                            try:
+                                await self._update_project_state_on_task_completion(task, success)
+                            except Exception as e:
+                                logger.warning(f"Error updating project state: {e}")
+
+                            # =============================================================
                             # EXTRACT SKILL FROM SUCCESSFUL TASK (Self-Generating)
                             # =============================================================
                             if success and validation_passed:
@@ -772,16 +780,62 @@ class Orchestrator:
         Returns True if validation passed, False if failed.
         """
         try:
-            # Determine project path from task context
-            project_path = "/workspace"  # Default
+            import re
+            from pathlib import Path
 
-            # Try to extract path from task result or metadata
-            if task.result and isinstance(task.result, str):
-                # Look for path patterns in result
-                import re
-                path_match = re.search(r'/workspace/[\w\-/]+', task.result)
+            # Determine project path from task context
+            project_path = None
+
+            # =================================================================
+            # PRIORITY 1: Extract from task metadata (resumption tasks)
+            # =================================================================
+            if hasattr(task, 'metadata') and task.metadata:
+                if isinstance(task.metadata, dict):
+                    project_path = task.metadata.get('project_path')
+
+            # =================================================================
+            # PRIORITY 2: Extract from task description
+            # =================================================================
+            if not project_path and task.description:
+                # Look for explicit project path mentions
+                path_match = re.search(r'(?:Project Path:|Project:)\s*(/workspace/[\w\-]+)', task.description)
                 if path_match:
-                    project_path = path_match.group(0).rsplit('/', 1)[0]
+                    project_path = path_match.group(1)
+                else:
+                    # Look for any workspace path
+                    path_match = re.search(r'/workspace/([\w\-]+)', task.description)
+                    if path_match:
+                        project_path = f"/workspace/{path_match.group(1)}"
+
+            # =================================================================
+            # PRIORITY 3: Extract from task result
+            # =================================================================
+            if not project_path and task.result and isinstance(task.result, str):
+                path_match = re.search(r'/workspace/([\w\-]+)', task.result)
+                if path_match:
+                    project_path = f"/workspace/{path_match.group(1)}"
+
+            # =================================================================
+            # PRIORITY 4: Find most recently modified project
+            # =================================================================
+            if not project_path:
+                workspace = Path("/workspace")
+                if workspace.exists():
+                    projects = [
+                        p for p in workspace.iterdir()
+                        if p.is_dir() and not p.name.startswith('.')
+                        and ((p / "package.json").exists() or (p / "requirements.txt").exists())
+                    ]
+                    if projects:
+                        # Sort by modification time, most recent first
+                        projects.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+                        project_path = str(projects[0])
+                        logger.info(f"Auto-detected project: {project_path}")
+
+            # Fallback to workspace root (will likely fail but logs the issue)
+            if not project_path:
+                project_path = "/workspace"
+                logger.warning("Could not determine project path, using /workspace root")
 
             logger.info(f"[MANDATORY VALIDATION] Running on {project_path} for task {task.id}")
 
@@ -901,25 +955,47 @@ IMPORTANT: After fixing, validation will automatically re-run on the project.
         If validation passes, start the dev server for the project.
         """
         try:
+            import re
+            from pathlib import Path
+
             logger.info(f"Fix task completed: {fix_task.title}")
 
-            # Determine project path
-            project_path = "/workspace"
-            if fix_task.description:
-                import re
-                path_match = re.search(r'/workspace/([\w\-]+)', fix_task.description)
+            # =================================================================
+            # DETERMINE PROJECT PATH (same logic as _run_validation)
+            # =================================================================
+            project_path = None
+
+            # Try metadata first
+            if hasattr(fix_task, 'metadata') and fix_task.metadata:
+                if isinstance(fix_task.metadata, dict):
+                    project_path = fix_task.metadata.get('project_path')
+
+            # Try description
+            if not project_path and fix_task.description:
+                path_match = re.search(r'(?:Project Path:|Project:)\s*(/workspace/[\w\-]+)', fix_task.description)
                 if path_match:
-                    project_path = path_match.group(0)
+                    project_path = path_match.group(1)
+                else:
+                    path_match = re.search(r'/workspace/([\w\-]+)', fix_task.description)
+                    if path_match:
+                        project_path = f"/workspace/{path_match.group(1)}"
 
-            # Find the actual project directory
-            from pathlib import Path
-            workspace = Path("/workspace")
-            projects = [p for p in workspace.iterdir() if p.is_dir() and not p.name.startswith('.')]
+            # Find most recently modified project as fallback
+            if not project_path:
+                workspace = Path("/workspace")
+                if workspace.exists():
+                    projects = [
+                        p for p in workspace.iterdir()
+                        if p.is_dir() and not p.name.startswith('.')
+                        and ((p / "package.json").exists() or (p / "requirements.txt").exists())
+                    ]
+                    if projects:
+                        projects.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+                        project_path = str(projects[0])
 
-            for project in projects:
-                if (project / "package.json").exists() or (project / "requirements.txt").exists():
-                    project_path = str(project)
-                    break
+            if not project_path:
+                project_path = "/workspace"
+                logger.warning("Could not determine project path for re-validation")
 
             logger.info(f"[RE-VALIDATION] Running full validation on {project_path}")
 
@@ -1339,6 +1415,145 @@ echo $! > {project / ".clopus" / "dev_server.pid"}
 
         except Exception as e:
             logger.error(f"Error syncing to GitHub: {e}")
+
+    async def _update_project_state_on_task_completion(self, task, success: bool) -> None:
+        """
+        Update project state when a task completes.
+        This keeps the project state file in sync with actual progress.
+        """
+        import re
+        from pathlib import Path
+
+        try:
+            # =================================================================
+            # EXTRACT PROJECT PATH FROM TASK
+            # =================================================================
+            project_path = None
+
+            # Try metadata first
+            if hasattr(task, 'metadata') and task.metadata:
+                if isinstance(task.metadata, dict):
+                    project_path = task.metadata.get('project_path')
+
+            # Try description
+            if not project_path and task.description:
+                path_match = re.search(r'(?:Project Path:|Project:)\s*(/workspace/[\w\-]+)', task.description)
+                if path_match:
+                    project_path = path_match.group(1)
+                else:
+                    path_match = re.search(r'/workspace/([\w\-]+)', task.description)
+                    if path_match:
+                        project_path = f"/workspace/{path_match.group(1)}"
+
+            # Try title for project name patterns
+            if not project_path and task.title:
+                # Look for "for <project>" pattern
+                title_match = re.search(r'for ([\w\-]+)$', task.title)
+                if title_match:
+                    project_path = f"/workspace/{title_match.group(1)}"
+
+            if not project_path:
+                logger.debug(f"Could not determine project path for task: {task.title}")
+                return
+
+            # =================================================================
+            # DETERMINE WHAT TYPE OF TASK COMPLETED
+            # =================================================================
+            task_title_lower = task.title.lower()
+
+            # Design system tasks
+            if "design" in task_title_lower and "system" in task_title_lower:
+                if success:
+                    await self.state_manager.update_stage(
+                        project_path, "design", "completed"
+                    )
+                    # Check if design system file exists
+                    design_file = Path(project_path) / ".clopus" / "design" / "DESIGN_SYSTEM.md"
+                    if design_file.exists():
+                        await self.state_manager.update_has_design_system(project_path, True)
+                    logger.info(f"Updated project state: design completed for {project_path}")
+                else:
+                    await self.state_manager.update_stage(
+                        project_path, "design", "failed"
+                    )
+
+            # E2E testing tasks
+            elif "e2e" in task_title_lower or "end-to-end" in task_title_lower:
+                if success:
+                    await self.state_manager.update_stage(
+                        project_path, "e2e_testing", "completed"
+                    )
+                    # Check for screenshots
+                    screenshots_dir = Path(project_path) / ".clopus" / "screenshots"
+                    if screenshots_dir.exists():
+                        screenshots = list(screenshots_dir.glob("*.png"))
+                        await self.state_manager.update_screenshots(
+                            project_path, [str(s) for s in screenshots]
+                        )
+                    logger.info(f"Updated project state: e2e_testing completed for {project_path}")
+                else:
+                    await self.state_manager.update_stage(
+                        project_path, "e2e_testing", "failed"
+                    )
+
+            # Documentation/PROJECT.md tasks
+            elif "project.md" in task_title_lower or "documentation" in task_title_lower:
+                if success:
+                    await self.state_manager.update_stage(
+                        project_path, "documentation", "completed"
+                    )
+                    logger.info(f"Updated project state: documentation completed for {project_path}")
+                else:
+                    await self.state_manager.update_stage(
+                        project_path, "documentation", "failed"
+                    )
+
+            # Validation tasks
+            elif "validation" in task_title_lower or "validate" in task_title_lower:
+                if success:
+                    await self.state_manager.update_stage(
+                        project_path, "validation", "completed"
+                    )
+                    logger.info(f"Updated project state: validation completed for {project_path}")
+                else:
+                    await self.state_manager.update_stage(
+                        project_path, "validation", "failed"
+                    )
+
+            # Dev server tasks
+            elif "dev server" in task_title_lower or "start server" in task_title_lower:
+                if success:
+                    # Get the allocated port
+                    port_manager = get_port_manager()
+                    project_name = Path(project_path).name
+                    port = port_manager.get_project_port(project_name)
+                    await self.state_manager.update_dev_server(
+                        project_path,
+                        running=True,
+                        port=port,
+                        url=f"http://localhost:{port}"
+                    )
+                    logger.info(f"Updated project state: dev server running on port {port} for {project_path}")
+
+            # Implementation/coding tasks
+            elif task.worker_role == "coder" and success:
+                # Mark implementation as in progress or completed
+                current_state = await self.state_manager.get_state(project_path)
+                if current_state:
+                    impl_status = current_state.stages.get("implementation", {}).get("status")
+                    if impl_status == "pending":
+                        await self.state_manager.update_stage(
+                            project_path, "implementation", "in_progress"
+                        )
+
+            # Check if project is complete (all stages done)
+            state = await self.state_manager.get_state(project_path)
+            if state and state.is_complete():
+                await self.state_manager.update_status(project_path, "completed")
+                logger.info(f"Project {project_path} marked as COMPLETED")
+
+        except Exception as e:
+            logger.warning(f"Error updating project state for task {task.id}: {e}")
 
 
 async def main():

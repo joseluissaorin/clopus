@@ -564,10 +564,49 @@ git clone https://github.com/joseluissaorin/clopus.git
 
 ---
 
-## LESSON LEARNED
+## AUTONOMY IMPROVEMENTS
 
-**2025-12-27**: Project was accidentally deleted by running `rm -rf` inside a Docker container on a volume-mounted `/workspace` directory. This affected the host filesystem.
+### Automatic Worker Refresh on Restart
+
+When the orchestrator restarts, it now:
+1. **Clears stale IPC files** - Removes old `pending.json`, `result.json`, and `cancel` files from all workers
+2. **Workers pick up fresh tasks** - No need to manually restart workers after orchestrator restart
+3. **Prevents task duplication** - Old tasks are properly cleaned up before new resumption tasks are created
+
+### Smart Project Path Detection
+
+The validation pipeline now uses a 4-priority system to find the correct project:
+
+1. **Task metadata** - `project_path` field in task metadata (highest priority)
+2. **Task description** - Looks for `Project Path:` or `/workspace/<project>` patterns
+3. **Task result** - Extracts path from task output
+4. **Auto-detection** - Finds most recently modified project with `package.json` or `requirements.txt`
+
+This ensures validation runs on the correct project, not `/workspace` root.
+
+### Real-Time Project State Updates
+
+Project state (`project_state.json`) is now automatically updated when:
+
+| Task Type | State Updated |
+|-----------|---------------|
+| Design system creation | `design: completed`, `has_design_system: true` |
+| E2E testing | `e2e_testing: completed`, screenshots list |
+| PROJECT.md generation | `documentation: completed` |
+| Validation passes | `validation: completed` |
+| Dev server starts | `dev_server.running: true`, port info |
+| Implementation tasks | `implementation: in_progress` |
+
+When all stages complete, project is marked as `status: completed`.
+
+---
+
+## LESSONS LEARNED
+
+**2025-12-27 (Morning)**: Project was accidentally deleted by running `rm -rf` inside a Docker container on a volume-mounted `/workspace` directory. This affected the host filesystem.
 
 **ALWAYS verify mount points before running destructive commands in containers.**
 
 Workspace is now isolated to `~/Dev/clopus-projects` to prevent future accidents.
+
+**2025-12-27 (Afternoon)**: Workers were stuck on old tasks after orchestrator restart. Root cause: stale IPC files in `/app/ipc/tasks/`. Fixed by clearing IPC files during worker pool initialization.

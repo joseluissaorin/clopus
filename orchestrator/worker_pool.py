@@ -50,6 +50,23 @@ class WorkerPool:
             worker_dir = self.ipc_path / "tasks" / str(i)
             worker_dir.mkdir(parents=True, exist_ok=True)
 
+            # =================================================================
+            # CLEAR STALE IPC FILES ON RESTART
+            # =================================================================
+            # This ensures workers pick up fresh tasks after orchestrator restart
+            pending_file = worker_dir / "pending.json"
+            result_file = worker_dir / "result.json"
+            cancel_file = worker_dir / "cancel"
+
+            if pending_file.exists():
+                pending_file.unlink()
+                logger.info(f"Cleared stale pending task for worker {i}")
+            if result_file.exists():
+                result_file.unlink()
+                logger.info(f"Cleared stale result for worker {i}")
+            if cancel_file.exists():
+                cancel_file.unlink()
+
             # Register worker
             worker = await self.memory.register_worker(i, role)
             self.workers[i] = {

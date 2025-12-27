@@ -682,6 +682,61 @@ class ProjectStateManager:
 
         await self.save_state(state)
 
+    async def update_screenshots(
+        self,
+        project_path: str,
+        screenshots: List[str]
+    ) -> None:
+        """Bulk update screenshots for E2E testing stage."""
+        state = self._states.get(project_path)
+        if not state:
+            state = await self.load_state(project_path)
+        if not state:
+            return
+
+        state.stages["e2e_testing"]["screenshots"] = screenshots
+        await self.save_state(state)
+
+    async def update_has_design_system(
+        self,
+        project_path: str,
+        has_design: bool
+    ) -> None:
+        """Update whether project has a design system."""
+        state = self._states.get(project_path)
+        if not state:
+            state = await self.load_state(project_path)
+        if not state:
+            return
+
+        state.has_design_system = has_design
+        await self.save_state(state)
+
+    async def update_status(
+        self,
+        project_path: str,
+        status: str
+    ) -> None:
+        """Update overall project status."""
+        state = self._states.get(project_path)
+        if not state:
+            state = await self.load_state(project_path)
+        if not state:
+            return
+
+        state.status = status
+        await self.save_state(state)
+
+    async def get_state(
+        self,
+        project_path: str
+    ) -> Optional[ProjectState]:
+        """Get the current state for a project."""
+        state = self._states.get(project_path)
+        if not state:
+            state = await self.load_state(project_path)
+        return state
+
 
 # Singleton instance
 _state_manager: Optional[ProjectStateManager] = None
