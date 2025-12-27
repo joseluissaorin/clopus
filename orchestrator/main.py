@@ -29,6 +29,8 @@ from .project_setup import ProjectSetup
 from .service_manager import ServiceManager
 from .capability_installer import CapabilityInstaller
 from .knowledge_base import KnowledgeBase
+from .port_manager import get_port_manager, PortManager
+from .project_docs import get_docs_generator, get_branding_generator, ProjectDocsGenerator, BrandingGenerator
 from validation.pipeline import ValidationPipeline
 
 # Configure logging
@@ -832,6 +834,9 @@ IMPORTANT: After fixing, validation will automatically re-run on the project.
                 # Start dev server for the project
                 await self._start_project_dev_server(project_path)
 
+                # Generate project documentation and branding
+                await self._generate_project_docs_and_branding(project_path, fix_task, result)
+
                 # Log success
                 await self.memory.log_activity(
                     source="validation",
@@ -874,9 +879,10 @@ IMPORTANT: After fixing, validation will automatically re-run on the project.
             project = Path(project_path)
             project_name = project.name
 
-            # Determine the port (use project hash for consistent ports)
-            base_port = 3000
-            port = base_port + (hash(project_name) % 100)
+            # Use dynamic port allocation with availability checking
+            port_manager = get_port_manager()
+            port = port_manager.get_project_port(project_name)
+            logger.info(f"Allocated port {port} for {project_name}")
 
             # Check if package.json exists
             if (project / "package.json").exists():
@@ -922,6 +928,100 @@ echo $! > {project / ".clopus" / "dev_server.pid"}
 
         except Exception as e:
             logger.error(f"Error starting dev server: {e}")
+
+    async def _generate_project_docs_and_branding(
+        self,
+        project_path: str,
+        task,
+        validation_result
+    ) -> None:
+        """Generate project documentation and branding configuration."""
+        try:
+            from pathlib import Path
+
+            project = Path(project_path)
+            project_name = project.name
+
+            # Get branding generator
+            branding_gen = get_branding_generator()
+
+            # Get objective content
+            objective_content = "Project created by CLOPUS"
+            if task and task.objective_id:
+                try:
+                    objective = await self.memory.short_term.get_objective(task.objective_id)
+                    if objective:
+                        objective_content = objective.content
+                except Exception:
+                    pass
+
+            # Generate branding
+            branding = branding_gen.generate_branding(
+                project_name=project_name,
+                project_type="web",
+                objective=objective_content
+            )
+
+            # Save branding config
+            branding_gen.create_brand_config(project_path, branding)
+            logger.info(f"Generated branding for {project_name}: {branding['name']}")
+
+            # Get port
+            port_manager = get_port_manager()
+            port = port_manager.get_project_port(project_name)
+
+            # Get completed tasks
+            tasks_completed = []
+            if task and task.objective_id:
+                try:
+                    tasks = await self.memory.short_term.get_tasks_for_objective(task.objective_id)
+                    tasks_completed = [
+                        {
+                            "title": t.title,
+                            "success": (t.status.value if hasattr(t.status, 'value') else str(t.status)) == "completed"
+                        }
+                        for t in tasks
+                    ]
+                except Exception:
+                    pass
+
+            # Build validation results dict
+            val_results = {
+                "stages": [
+                    {
+                        "stage": str(s.stage.value if hasattr(s.stage, 'value') else s.stage),
+                        "passed": str(s.status.value if hasattr(s.status, 'value') else s.status) == "passed"
+                    }
+                    for s in validation_result.stages
+                ] if validation_result else []
+            }
+
+            # Generate documentation
+            docs_gen = get_docs_generator()
+            docs_path = await docs_gen.generate_project_docs(
+                project_path=project_path,
+                objective=objective_content,
+                tasks_completed=tasks_completed,
+                validation_results=val_results,
+                port=port,
+                branding=branding
+            )
+
+            logger.info(f"Generated project documentation: {docs_path}")
+
+            # Log activity
+            await self.memory.log_activity(
+                source="project_docs",
+                action="generated",
+                details={
+                    "project": project_name,
+                    "docs_path": docs_path,
+                    "branding": branding
+                }
+            )
+
+        except Exception as e:
+            logger.error(f"Error generating project docs and branding: {e}")
 
     async def _extract_template_if_applicable(self, objective_id: str) -> None:
         """Extract a template from completed objective if applicable."""
