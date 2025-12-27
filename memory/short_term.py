@@ -17,6 +17,11 @@ from dataclasses import dataclass, asdict
 from enum import Enum
 
 
+def _safe_enum_value(val):
+    """Safely get the string value from an Enum or pass through a string."""
+    return val.value if hasattr(val, 'value') else str(val)
+
+
 class ObjectiveStatus(str, Enum):
     PENDING = "pending"
     PLANNING = "planning"
@@ -154,7 +159,7 @@ class ShortTermMemory:
             await conn.execute(
                 """INSERT INTO objectives (id, content, status, priority, created_at, metadata)
                    VALUES (?, ?, ?, ?, ?, ?)""",
-                (objective.id, objective.content, objective.status.value,
+                (objective.id, objective.content, _safe_enum_value(objective.status),
                  objective.priority, objective.created_at, json.dumps(objective.metadata))
             )
             await conn.commit()
@@ -185,7 +190,7 @@ class ShortTermMemory:
         """Update objective status."""
         async with self._lock:
             conn = await self._get_connection()
-            updates = {"status": status.value}
+            updates = {"status": _safe_enum_value(status)}
             if status == ObjectiveStatus.IN_PROGRESS:
                 updates["started_at"] = datetime.now().isoformat()
             elif status in (ObjectiveStatus.COMPLETED, ObjectiveStatus.FAILED):
@@ -245,7 +250,7 @@ class ShortTermMemory:
                     worker_role, priority, dependencies, created_at)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (task.id, task.objective_id, task.parent_task_id, task.title,
-                 task.description, task.status.value, task.worker_role,
+                 task.description, _safe_enum_value(task.status), task.worker_role,
                  task.priority, json.dumps(task.dependencies), task.created_at)
             )
             await conn.commit()
@@ -308,7 +313,7 @@ class ShortTermMemory:
         """Update task status."""
         async with self._lock:
             conn = await self._get_connection()
-            updates = {"status": status.value}
+            updates = {"status": _safe_enum_value(status)}
 
             if status == TaskStatus.IN_PROGRESS:
                 updates["started_at"] = datetime.now().isoformat()
@@ -381,7 +386,7 @@ class ShortTermMemory:
             await conn.execute(
                 """INSERT OR REPLACE INTO workers (id, role, status, last_heartbeat, started_at)
                    VALUES (?, ?, ?, ?, ?)""",
-                (worker.id, worker.role, worker.status.value,
+                (worker.id, worker.role, _safe_enum_value(worker.status),
                  worker.last_heartbeat, worker.started_at)
             )
             await conn.commit()
@@ -400,7 +405,7 @@ class ShortTermMemory:
             await conn.execute(
                 """UPDATE workers SET status = ?, current_task_id = ?, last_heartbeat = ?
                    WHERE id = ?""",
-                (status.value, current_task_id, datetime.now().isoformat(), worker_id)
+                (_safe_enum_value(status), current_task_id, datetime.now().isoformat(), worker_id)
             )
             await conn.commit()
 

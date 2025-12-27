@@ -35,21 +35,47 @@ class UnitTestValidator(BaseValidator):
             )
 
     async def _run_jest(self, path: Path) -> StageResult:
-        """Run Jest tests."""
-        # Check if Jest is configured
+        """Run Jest or Vitest tests."""
+        # Check if test is configured
         pkg_path = path / "package.json"
         if pkg_path.exists():
             pkg = json.loads(pkg_path.read_text())
             scripts = pkg.get("scripts", {})
-            if "test" not in scripts:
+            if "test" not in scripts and "test:run" not in scripts:
                 return StageResult(
                     stage=self.stage,
                     status=ValidationStatus.SKIPPED,
                     output="No test script found in package.json"
                 )
 
+        # Detect if using Vitest (check for vitest in devDependencies or vite.config)
+        is_vitest = False
+        if pkg_path.exists():
+            pkg = json.loads(pkg_path.read_text())
+            dev_deps = pkg.get("devDependencies", {})
+            if "vitest" in dev_deps:
+                is_vitest = True
+
+        # Also check for vitest config
+        if (path / "vitest.config.ts").exists() or (path / "vitest.config.js").exists():
+            is_vitest = True
+
+        # Check vite.config for vitest
+        vite_config = path / "vite.config.ts"
+        if vite_config.exists():
+            content = vite_config.read_text()
+            if "vitest" in content or "test:" in content:
+                is_vitest = True
+
+        if is_vitest:
+            # Use vitest run (non-watch mode)
+            cmd = ["npx", "vitest", "run"]
+        else:
+            # Use Jest with CI mode
+            cmd = ["npm", "test", "--", "--passWithNoTests", "--ci"]
+
         returncode, stdout, stderr = await self.run_command(
-            ["npm", "test", "--", "--passWithNoTests", "--ci"],
+            cmd,
             cwd=path,
             timeout=300
         )

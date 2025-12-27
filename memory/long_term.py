@@ -20,6 +20,11 @@ from chromadb.config import Settings
 from .embeddings import EmbeddingEngine
 
 
+def _safe_enum_value(val):
+    """Safely get the string value from an Enum or pass through a string."""
+    return val.value if hasattr(val, 'value') else str(val)
+
+
 class MemoryType(str, Enum):
     LEARNING = "learning"           # What worked, what didn't
     PATTERN = "pattern"             # Recognized coding patterns
@@ -119,7 +124,7 @@ class LongTermMemory:
         memory_id = memory_id or str(uuid.uuid4())
         metadata = metadata or {}
         metadata["created_at"] = datetime.now().isoformat()
-        metadata["memory_type"] = memory_type.value
+        metadata["memory_type"] = _safe_enum_value(memory_type)
 
         # Convert lists to comma-separated strings (ChromaDB only accepts primitives)
         for key, value in list(metadata.items()):
@@ -519,6 +524,6 @@ class LongTermMemory:
 
         context_parts = []
         for memory in memories:
-            context_parts.append(f"---\n[{memory.memory_type.value}] (relevance: {memory.relevance_score:.2f})\n{memory.content}\n")
+            context_parts.append(f"---\n[{_safe_enum_value(memory.memory_type)}] (relevance: {memory.relevance_score:.2f})\n{memory.content}\n")
 
         return "Relevant memories:\n" + "\n".join(context_parts)

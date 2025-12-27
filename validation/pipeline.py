@@ -176,11 +176,14 @@ class ValidationPipeline:
 
                 # Store result in memory
                 if task_id:
+                    # Handle both Enum and string values safely
+                    stage_name = stage.value if hasattr(stage, 'value') else str(stage)
+                    status_name = result.status.value if hasattr(result.status, 'value') else str(result.status)
                     await self.memory.short_term.log_activity(
                         source="validation",
-                        action=f"stage_{stage.value}",
+                        action=f"stage_{stage_name}",
                         details={
-                            "status": result.status.value,
+                            "status": status_name,
                             "errors": len(result.errors),
                             "warnings": len(result.warnings)
                         },
@@ -259,27 +262,26 @@ class ValidationPipeline:
 
         return "unknown"
 
-    def _generate_summary(
-        self,
-        results: List[StageResult],
-        passed: bool
-    ) -> str:
-        """Generate a validation summary."""
+    def _generate_summary(self, results: List[StageResult], passed: bool) -> str:
+        """Generate human-readable summary."""
         lines = []
-
         status_emoji = "✓" if passed else "✗"
         lines.append(f"{status_emoji} Validation {'PASSED' if passed else 'FAILED'}")
         lines.append("")
 
         for result in results:
-            if result.status == ValidationStatus.PASSED:
-                lines.append(f"  ✓ {result.stage.value}: passed ({result.duration_ms}ms)")
-            elif result.status == ValidationStatus.FAILED:
-                lines.append(f"  ✗ {result.stage.value}: FAILED")
+            # Handle both Enum and string values safely
+            stage_name = result.stage.value if hasattr(result.stage, 'value') else str(result.stage)
+            status_str = result.status.value if hasattr(result.status, 'value') else str(result.status)
+
+            if status_str == "passed":
+                lines.append(f"  ✓ {stage_name}: passed ({result.duration_ms}ms)")
+            elif status_str == "failed":
+                lines.append(f"  ✗ {stage_name}: FAILED")
                 for error in result.errors[:3]:
                     lines.append(f"      - {error[:80]}")
-            elif result.status == ValidationStatus.SKIPPED:
-                lines.append(f"  ○ {result.stage.value}: skipped")
+            elif status_str == "skipped":
+                lines.append(f"  ○ {stage_name}: skipped")
 
             if result.warnings:
                 lines.append(f"      ⚠ {len(result.warnings)} warning(s)")

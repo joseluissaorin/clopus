@@ -34,8 +34,43 @@ class SyntaxValidator(BaseValidator):
         warnings = []
         files_checked = 0
 
-        # Get all source files
+        # For TypeScript projects, use the project's tsconfig for proper checking
+        if (path / "tsconfig.json").exists():
+            returncode, stdout, stderr = await self.run_command(
+                ["npx", "tsc", "--noEmit"],
+                cwd=path,
+                timeout=120
+            )
+
+            if returncode != 0:
+                # Parse TypeScript errors
+                output = stderr or stdout
+                for line in output.split("\n"):
+                    if "error TS" in line:
+                        errors.append(line[:200])
+
+            if not errors:
+                return StageResult(
+                    stage=self.stage,
+                    status=ValidationStatus.PASSED,
+                    output="TypeScript syntax check passed",
+                    metadata={"typescript": True}
+                )
+            else:
+                return StageResult(
+                    stage=self.stage,
+                    status=ValidationStatus.FAILED,
+                    output="TypeScript syntax errors found",
+                    errors=errors[:10],
+                    metadata={"typescript": True}
+                )
+
+        # For non-TypeScript projects, check individual files
         for ext, checker in self.CHECKERS.items():
+            # Skip TypeScript for projects with tsconfig (handled above)
+            if ext in (".ts", ".tsx"):
+                continue
+
             for file in path.rglob(f"*{ext}"):
                 # Skip node_modules, __pycache__, etc.
                 if any(

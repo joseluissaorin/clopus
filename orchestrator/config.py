@@ -47,7 +47,7 @@ class ValidationConfig(BaseModel):
 
 class ConfidenceConfig(BaseModel):
     """Confidence engine configuration."""
-    threshold: float = 0.7
+    threshold: float = 0.4  # Lower threshold to proceed more autonomously
     weights: Dict[str, float] = {
         "task_complexity": 0.2,
         "similar_past_success": 0.25,

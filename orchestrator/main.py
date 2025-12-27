@@ -132,7 +132,7 @@ class Orchestrator:
         logger.info("GitHub sync initialized")
 
         # Initialize service manager
-        self.service_manager = ServiceManager(self.settings.services_config)
+        self.service_manager = ServiceManager("/app/docker-compose.yml")
         logger.info("Service manager initialized")
 
         # Initialize self-generating ecosystem components
@@ -168,9 +168,6 @@ class Orchestrator:
 
         self.project_setup = ProjectSetup("/workspace")
         logger.info("Project setup initialized")
-
-        self.service_manager = ServiceManager("/app/docker-compose.yml")
-        logger.info("Service manager initialized")
 
         self.capability_installer = CapabilityInstaller(self.worker_pool)
         logger.info("Capability installer initialized")
@@ -605,17 +602,23 @@ class Orchestrator:
                             if success and validation_passed:
                                 await self._extract_skill_from_task(task, result)
 
+                            # =============================================================
+                            # RE-VALIDATE AFTER FIX TASK COMPLETES
+                            # =============================================================
+                            if success and task.title.startswith("Fix validation failures:"):
+                                await self._handle_fix_task_completion(task)
+
                             # Check if objective is complete
                             objective_tasks = await self.memory.short_term.get_tasks_for_objective(
                                 task.objective_id
                             )
                             all_complete = all(
-                                t.status.value in ("completed", "failed")
+                                (t.status.value if hasattr(t.status, 'value') else str(t.status)) in ("completed", "failed")
                                 for t in objective_tasks
                             )
                             if all_complete:
                                 all_success = all(
-                                    t.status.value == "completed"
+                                    (t.status.value if hasattr(t.status, 'value') else str(t.status)) == "completed"
                                     for t in objective_tasks
                                 )
                                 await self.memory.complete_objective(
@@ -753,16 +756,19 @@ class Orchestrator:
 VALIDATION FAILURE - Fix Required
 
 Original Task: {original_task.title}
+Original Task ID: {original_task.id}
 Failed Validation Stages: {', '.join(failed_stages)}
 Error Summary: {error_summary}
 
 Please:
 1. Analyze the validation errors
 2. Fix the code to pass all validation stages
-3. Re-run validation to confirm fixes
+3. Validation will automatically re-run after this fix task completes
 
 Failed stages need to pass:
 {chr(10).join(f'- {stage}' for stage in failed_stages)}
+
+IMPORTANT: After fixing, validation will automatically re-run on the project.
 """
 
             await self.memory.create_tasks(original_task.objective_id, [
@@ -771,7 +777,13 @@ Failed stages need to pass:
                     "description": fix_description,
                     "priority": 1,  # High priority
                     "dependencies": [],
-                    "worker_role": "debugger"
+                    "worker_role": "debugger",
+                    "metadata": {
+                        "is_fix_task": True,
+                        "original_task_id": original_task.id,
+                        "failed_stages": failed_stages,
+                        "revalidate_after": True
+                    }
                 }
             ])
 
@@ -779,6 +791,137 @@ Failed stages need to pass:
 
         except Exception as e:
             logger.error(f"Error creating fix task: {e}")
+
+    async def _handle_fix_task_completion(self, fix_task) -> None:
+        """
+        Handle completion of a fix task by re-running validation.
+        If validation passes, start the dev server for the project.
+        """
+        try:
+            logger.info(f"Fix task completed: {fix_task.title}")
+
+            # Determine project path
+            project_path = "/workspace"
+            if fix_task.description:
+                import re
+                path_match = re.search(r'/workspace/([\w\-]+)', fix_task.description)
+                if path_match:
+                    project_path = path_match.group(0)
+
+            # Find the actual project directory
+            from pathlib import Path
+            workspace = Path("/workspace")
+            projects = [p for p in workspace.iterdir() if p.is_dir() and not p.name.startswith('.')]
+
+            for project in projects:
+                if (project / "package.json").exists() or (project / "requirements.txt").exists():
+                    project_path = str(project)
+                    break
+
+            logger.info(f"[RE-VALIDATION] Running full validation on {project_path}")
+
+            # Run full validation
+            result = await self.validation_pipeline.validate(
+                project_path=project_path,
+                task_id=fix_task.id
+            )
+
+            if result.passed:
+                logger.info(f"✓ RE-VALIDATION PASSED for {project_path}")
+
+                # Start dev server for the project
+                await self._start_project_dev_server(project_path)
+
+                # Log success
+                await self.memory.log_activity(
+                    source="validation",
+                    action="revalidation_passed",
+                    details={"project_path": project_path, "fix_task_id": fix_task.id}
+                )
+            else:
+                logger.warning(f"✗ RE-VALIDATION FAILED for {project_path}: {result.summary}")
+
+                # Create another fix task
+                failed_stages = [
+                    str(s.stage.value if hasattr(s.stage, 'value') else s.stage)
+                    for s in result.stages
+                    if str(s.status.value if hasattr(s.status, 'value') else s.status) == "failed"
+                ]
+
+                # Create a new mock task for the fix task creation
+                class MockTask:
+                    def __init__(self, task):
+                        self.id = task.id
+                        self.title = task.title.replace("Fix validation failures: ", "")
+                        self.objective_id = task.objective_id
+
+                await self._create_fix_task(
+                    MockTask(fix_task),
+                    failed_stages,
+                    result.summary
+                )
+
+        except Exception as e:
+            logger.error(f"Error handling fix task completion: {e}")
+
+    async def _start_project_dev_server(self, project_path: str) -> None:
+        """Start a dev server for the project so it's accessible via browser."""
+        try:
+            from pathlib import Path
+            import subprocess
+            import os
+
+            project = Path(project_path)
+            project_name = project.name
+
+            # Determine the port (use project hash for consistent ports)
+            base_port = 3000
+            port = base_port + (hash(project_name) % 100)
+
+            # Check if package.json exists
+            if (project / "package.json").exists():
+                import json
+                pkg = json.loads((project / "package.json").read_text())
+                scripts = pkg.get("scripts", {})
+
+                if "dev" in scripts:
+                    # Start the dev server in background
+                    logger.info(f"Starting dev server for {project_name} on port {port}")
+
+                    # Create a startup script
+                    startup_script = project / ".clopus" / "start_server.sh"
+                    startup_script.parent.mkdir(exist_ok=True)
+
+                    startup_script.write_text(f'''#!/bin/bash
+cd {project_path}
+export PORT={port}
+export HOST=0.0.0.0
+npm run dev -- --host 0.0.0.0 --port {port} &
+echo $! > {project / ".clopus" / "dev_server.pid"}
+''')
+                    os.chmod(startup_script, 0o755)
+
+                    # Execute the startup script
+                    subprocess.Popen(
+                        ["bash", str(startup_script)],
+                        cwd=project_path,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL
+                    )
+
+                    logger.info(f"✓ Dev server started: http://0.0.0.0:{port}")
+
+                    # Store the server info
+                    server_info = project / ".clopus" / "server_info.json"
+                    server_info.write_text(json.dumps({
+                        "port": port,
+                        "host": "0.0.0.0",
+                        "url": f"http://0.0.0.0:{port}",
+                        "started_at": str(datetime.now())
+                    }))
+
+        except Exception as e:
+            logger.error(f"Error starting dev server: {e}")
 
     async def _extract_template_if_applicable(self, objective_id: str) -> None:
         """Extract a template from completed objective if applicable."""
