@@ -52,15 +52,15 @@ USER INPUT (CLI/File/Webhook)
 └─────────────────────────────────────────────────────────┘
          │
          ▼
-┌─────────────────────────────────────────────────────────┐
-│              WORKER POOL (5 Claude Code Instances)       │
-│  ┌─────────┐ ┌─────────┐ ┌─────────┐ ┌─────────┐ ┌─────────┐
-│  │ CODER   │ │ TESTER  │ │REVIEWER │ │RESEARCH │ │DEBUGGER │
-│  │         │ │         │ │         │ │         │ │         │
-│  │ Writes  │ │ Tests   │ │ Reviews │ │ Looks   │ │ Fixes   │
-│  │ code    │ │ + E2E   │ │ code    │ │ things  │ │ issues  │
-│  └─────────┘ └─────────┘ └─────────┘ └─────────┘ └─────────┘
-└─────────────────────────────────────────────────────────┘
+┌───────────────────────────────────────────────────────────────────┐
+│                WORKER POOL (6 Claude Code Instances)               │
+│  ┌─────────┐ ┌─────────┐ ┌─────────┐ ┌─────────┐ ┌─────────┐ ┌─────────┐
+│  │ CODER   │ │ TESTER  │ │REVIEWER │ │RESEARCH │ │DEBUGGER │ │DESIGNER │
+│  │         │ │         │ │         │ │         │ │         │ │         │
+│  │ Writes  │ │ Tests   │ │ Reviews │ │ Looks   │ │ Fixes   │ │ Creates │
+│  │ code    │ │ + E2E   │ │ code    │ │ things  │ │ issues  │ │ design  │
+│  └─────────┘ └─────────┘ └─────────┘ └─────────┘ └─────────┘ └─────────┘
+└───────────────────────────────────────────────────────────────────┘
          │
          ▼
 ┌─────────────────────────────────────────────────────────┐
@@ -360,34 +360,64 @@ Automatically detects from project files:
 
 ---
 
-## BRANDING SYSTEM
+## DESIGNER WORKER
 
-Every project gets automatic branding (name, colors, font).
+The Designer is a dedicated worker that creates comprehensive branding and design systems.
 
-### Color Palettes by Category
+### Designer Responsibilities
 
-| Category | Primary | Secondary | Accent |
-|----------|---------|-----------|--------|
-| **Todo/Task** | #3B82F6 (Blue) | #6366F1 (Indigo) | #22D3EE (Cyan) |
-| **Dashboard** | #6366F1 (Indigo) | #8B5CF6 (Purple) | #F59E0B (Amber) |
-| **E-commerce** | #10B981 (Emerald) | #059669 (Green) | #F97316 (Orange) |
-| **Social** | #EC4899 (Pink) | #F43F5E (Rose) | #8B5CF6 (Purple) |
-| **Productivity** | #0EA5E9 (Sky) | #3B82F6 (Blue) | #22C55E (Green) |
+1. **Early in Project:** Creates complete design system before implementation
+2. **For Existing Projects:** Analyzes and documents existing branding
+3. **Ongoing:** Answers design questions from other workers
+4. **E2E Testing:** Reviews screenshots and provides feedback
 
-### Branding Config File
-Saved to `.clopus/branding.json`:
-```json
-{
-  "brand": {
-    "name": "Todo App",
-    "colors": {
-      "primary": "#3B82F6",
-      "secondary": "#6366F1",
-      "accent": "#22D3EE"
-    },
-    "font": "Inter"
-  }
-}
+### Design System Output
+
+Designer creates `.clopus/design/DESIGN_SYSTEM.md` with:
+
+```markdown
+# [Project Name] Design System
+
+## Brand Identity
+- Project Name, Tagline, Personality
+
+## Color Palette
+| Role | Hex | Usage |
+|------|-----|-------|
+| Primary | #3B82F6 | Main actions |
+| Secondary | #6366F1 | Supporting |
+| Accent | #22D3EE | Highlights |
+| ... | ... | ... |
+
+## Typography
+- Heading Font: [family]
+- Body Font: [family]
+- Type Scale: H1-H6, body, small
+
+## Spacing System
+Base: 4px → xs, sm, md, lg, xl, 2xl
+
+## Component Styles
+- Buttons (primary, secondary, ghost)
+- Inputs (text, select, checkbox)
+- Cards (shadow, border-radius)
+- Navigation (header, sidebar)
+```
+
+### Design Consultation
+
+Other workers can request design help:
+- Ask about colors, spacing, component styles
+- Request screenshot feedback
+- Get guidance on new features matching existing design
+
+### Task Flow
+```
+1. Setup task completes
+2. DESIGNER creates design system ← RUNS EARLY
+3. CODER implements features (follows design system)
+4. TESTER takes screenshots
+5. DESIGNER reviews screenshots (optional)
 ```
 
 ---

@@ -134,11 +134,38 @@ class WorkerPool:
     ) -> str:
         """Build a prompt for Claude Code with skill and memory context."""
         role_instructions = {
-            "coder": "You are implementing code. Focus on clean, working code that follows best practices.",
+            "coder": "You are implementing code. Focus on clean, working code that follows best practices. Always follow the design documentation in .clopus/design/ when styling components.",
             "tester": "You are writing tests. Ensure comprehensive coverage and edge case handling.",
-            "reviewer": "You are reviewing code. Check for bugs, security issues, and best practices.",
+            "reviewer": "You are reviewing code. Check for bugs, security issues, and best practices. Verify that code follows the design system documented in .clopus/design/.",
             "researcher": "You are researching. Find relevant information, docs, and solutions.",
             "debugger": "You are debugging. Identify root causes and implement fixes.",
+            "designer": """You are the Design Lead for this project. Your responsibilities:
+
+1. CREATE COMPREHENSIVE DESIGN DOCUMENTATION:
+   - Brand identity (name, logo concept, tagline)
+   - Color palette (primary, secondary, accent, backgrounds, text colors)
+   - Typography (font families, sizes, weights for headings, body, UI)
+   - Component styles (buttons, inputs, cards, modals, navigation)
+   - Spacing system (consistent margins/padding scale)
+   - Visual hierarchy and layout patterns
+
+2. FOR NEW PROJECTS:
+   - Create a unique brand identity that matches the project purpose
+   - Choose colors that evoke the right emotions for the use case
+   - Define a complete design system before implementation begins
+   - Save all documentation to .clopus/design/ for other workers to follow
+
+3. FOR EXISTING PROJECTS:
+   - Analyze existing styles (CSS, component code, screenshots)
+   - Extract and document the current design system
+   - Ensure any new features match the existing visual language
+
+4. ONGOING SUPPORT:
+   - Other workers may request design feedback
+   - Review screenshots and suggest improvements
+   - Ensure visual consistency across the entire application
+
+Always output your design decisions to .clopus/design/DESIGN_SYSTEM.md""",
         }
 
         instruction = role_instructions.get(role, role_instructions["coder"])

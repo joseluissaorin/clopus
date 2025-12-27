@@ -60,7 +60,11 @@ class TaskPlanner:
             "reviewer": ["code_review", "security_review", "documentation"],
             "researcher": ["research", "api_docs", "dependencies", "investigation"],
             "debugger": ["debugging", "error_fixing", "performance", "troubleshooting"],
+            "designer": ["design_system", "branding", "ui_ux", "visual_design", "screenshot_review"],
         }
+
+        # Design system for creating design tasks
+        self.design_system = None
 
     async def plan(self, objective_id: str, parsed_objective: Dict) -> List[Dict]:
         """Create a task plan for an objective."""
@@ -115,6 +119,20 @@ class TaskPlanner:
             if template_tasks:
                 base_tasks = template_tasks
                 logger.info(f"Using {len(template_tasks)} tasks from template")
+
+        # =====================================================================
+        # ADD DESIGN TASK EARLY (Designer creates branding before implementation)
+        # =====================================================================
+        design_task = await self._create_design_task(
+            project_type=project_type,
+            objective_description=objective_description,
+            features=features,
+            base_tasks=base_tasks
+        )
+        if design_task:
+            # Insert design task near the beginning (after setup/research, before implementation)
+            base_tasks.insert(min(2, len(base_tasks)), design_task)
+            logger.info("Added design task to plan")
 
         # Add feature-specific tasks
         feature_tasks = self._plan_feature_tasks(features, technologies)
@@ -194,6 +212,105 @@ class TaskPlanner:
                 max_depth = max(max_depth, depth + 1)
 
         return max_depth
+
+    # =========================================================================
+    # DESIGN TASK CREATION
+    # =========================================================================
+
+    async def _create_design_task(
+        self,
+        project_type: str,
+        objective_description: str,
+        features: List[Dict],
+        base_tasks: List[PlannedTask]
+    ) -> Optional[PlannedTask]:
+        """
+        Create a design task that runs early in the project.
+        The Designer will create comprehensive branding and design documentation.
+        """
+        # Only add design task for UI projects
+        ui_project_types = [
+            "todo_app", "dashboard", "website", "ecommerce",
+            "mobile", "react", "nextjs", "vue", "angular"
+        ]
+
+        # Check if project has UI component
+        has_ui = (
+            project_type in ui_project_types or
+            any(t.worker_role == "coder" and "ui" in t.title.lower() for t in base_tasks) or
+            "ui" in objective_description.lower() or
+            "frontend" in objective_description.lower() or
+            "react" in objective_description.lower() or
+            "website" in objective_description.lower() or
+            "app" in objective_description.lower()
+        )
+
+        if not has_ui:
+            return None
+
+        # Get setup task ID for dependency
+        setup_task_ids = [
+            t.id for t in base_tasks
+            if "setup" in t.title.lower() or "init" in t.title.lower()
+        ]
+
+        # Extract feature descriptions
+        feature_descriptions = [
+            f.get("description", "") for f in features[:10]
+        ] if features else []
+
+        # Create comprehensive design task description
+        description = f"""Create comprehensive design system and branding documentation.
+
+## Project Context
+**Type:** {project_type}
+**Objective:** {objective_description[:500]}
+
+## Features to Design For:
+{chr(10).join(f'- {f}' for f in feature_descriptions) if feature_descriptions else '- See objective above'}
+
+## Required Outputs (save to .clopus/design/):
+
+### 1. DESIGN_SYSTEM.md
+Complete design documentation including:
+- Brand identity (name, tagline, personality)
+- Color palette (primary, secondary, accent, backgrounds, text, states)
+- Dark mode colors
+- Typography (fonts, type scale, weights)
+- Spacing system
+- Border radius scale
+- Shadow definitions
+- Component styles (buttons, inputs, cards, navigation)
+- Animation guidelines
+
+### 2. tailwind-theme.js (if using Tailwind)
+Ready-to-copy theme configuration
+
+### 3. variables.css (if not using Tailwind)
+CSS custom properties for all design tokens
+
+## Design Principles:
+- Unique, memorable brand that matches the project purpose
+- Accessible colors (WCAG AA contrast)
+- Responsive design support
+- Consistent visual language
+- Modern but timeless aesthetic
+
+## Important:
+This design system will be followed by ALL other workers.
+Be specific with values (exact hex codes, rem values, etc).
+"""
+
+        return PlannedTask(
+            id=str(uuid.uuid4()),
+            title="Create design system and branding",
+            description=description,
+            worker_role="designer",
+            priority=9,  # High priority, runs early
+            dependencies=setup_task_ids[:1] if setup_task_ids else [],
+            estimated_duration="medium",
+            validation_required=False  # Design docs don't need code validation
+        )
 
     # =========================================================================
     # PROJECT TYPE TEMPLATES
@@ -849,3 +966,8 @@ class TaskPlanner:
         """Set the template extractor for task planning."""
         self.template_extractor = template_extractor
         logger.info("Template extractor connected to task planner")
+
+    def set_design_system(self, design_system) -> None:
+        """Set the design system for task planning."""
+        self.design_system = design_system
+        logger.info("Design system connected to task planner")

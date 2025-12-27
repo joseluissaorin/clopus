@@ -17,8 +17,8 @@ import yaml
 
 class WorkerConfig(BaseModel):
     """Worker configuration."""
-    count: int = 5
-    roles: List[str] = ["coder", "tester", "reviewer", "researcher", "debugger"]
+    count: int = 6
+    roles: List[str] = ["coder", "tester", "reviewer", "researcher", "debugger", "designer"]
     poll_interval_ms: int = 500
     heartbeat_interval_s: int = 10
     task_timeout_s: int = 3600

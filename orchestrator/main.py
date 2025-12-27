@@ -30,7 +30,8 @@ from .service_manager import ServiceManager
 from .capability_installer import CapabilityInstaller
 from .knowledge_base import KnowledgeBase
 from .port_manager import get_port_manager, PortManager
-from .project_docs import get_docs_generator, get_branding_generator, ProjectDocsGenerator, BrandingGenerator
+from .project_docs import get_docs_generator, ProjectDocsGenerator
+from .design_system import get_design_system, get_consultation_queue, DesignSystem
 from validation.pipeline import ValidationPipeline
 
 # Configure logging
@@ -177,12 +178,17 @@ class Orchestrator:
         self.knowledge_base = KnowledgeBase(self.memory, "/app/knowledge")
         logger.info("Knowledge base initialized")
 
+        # Initialize design system
+        self.design_system = get_design_system(self.memory)
+        logger.info("Design system initialized")
+
         # =====================================================================
         # CONNECT COMPONENTS FOR INTEGRATION
         # =====================================================================
         # Connect skills engine to task planner for skill-aware planning
         self.task_planner.set_skills_engine(self.skills_engine)
         self.task_planner.set_template_extractor(self.template_extractor)
+        self.task_planner.set_design_system(self.design_system)
 
         # Connect skills engine to worker pool for skill-enhanced prompts
         self.worker_pool.set_skills_engine(self.skills_engine)
@@ -935,15 +941,12 @@ echo $! > {project / ".clopus" / "dev_server.pid"}
         task,
         validation_result
     ) -> None:
-        """Generate project documentation and branding configuration."""
+        """Generate project documentation using Designer's design system."""
         try:
             from pathlib import Path
 
             project = Path(project_path)
             project_name = project.name
-
-            # Get branding generator
-            branding_gen = get_branding_generator()
 
             # Get objective content
             objective_content = "Project created by CLOPUS"
@@ -955,16 +958,27 @@ echo $! > {project / ".clopus" / "dev_server.pid"}
                 except Exception:
                     pass
 
-            # Generate branding
-            branding = branding_gen.generate_branding(
-                project_name=project_name,
-                project_type="web",
-                objective=objective_content
-            )
-
-            # Save branding config
-            branding_gen.create_brand_config(project_path, branding)
-            logger.info(f"Generated branding for {project_name}: {branding['name']}")
+            # Read branding from Designer's design system
+            branding = None
+            design_system = await self.design_system.get_design_system(project_path)
+            if design_system:
+                # Extract branding from design system documentation
+                branding = design_system.get("branding", {})
+                if not branding and "documentation" in design_system:
+                    # Parse name from design system doc
+                    doc = design_system["documentation"]
+                    import re
+                    name_match = re.search(r'\*\*Project Name:\*\*\s*(.+)', doc)
+                    primary_match = re.search(r'Primary.*#([0-9A-Fa-f]{6})', doc)
+                    branding = {
+                        "name": name_match.group(1).strip() if name_match else project_name,
+                        "primary_color": f"#{primary_match.group(1)}" if primary_match else "#3B82F6",
+                    }
+                logger.info(f"Using Designer's branding for {project_name}")
+            else:
+                # Fallback if no design system exists (shouldn't happen normally)
+                branding = {"name": project_name, "primary_color": "#3B82F6"}
+                logger.warning(f"No design system found for {project_name}, using default")
 
             # Get port
             port_manager = get_port_manager()
