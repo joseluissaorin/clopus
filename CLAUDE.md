@@ -141,6 +141,82 @@ The engine learns from every decision:
 
 ---
 
+## HEARTBEAT AGENT (Completion Guardian)
+
+The Heartbeat Agent is a periodic supervisor that ensures projects actually meet their objectives. It's the "little voice in the head" that asks: **"Did we actually build what we promised?"**
+
+### The Problem It Solves
+
+CLOPUS plans tasks upfront and executes them, but without the Heartbeat Agent there's no feedback loop checking:
+- Did we actually build what was in the objective?
+- Is the API complete or just scaffolded?
+- Do the frontend and backend actually work together?
+- Did all 8 validation phases run, or just 3?
+
+### How It Works
+
+```
+HEARTBEAT CYCLE (every 5 minutes):
+1. READ the original objective
+2. ASSESS current project state (files, endpoints, tests, validation)
+3. COMPARE reality vs requirements (using Claude)
+4. IDENTIFY gaps ("objective says edges, but no /edges endpoint exists")
+5. SPAWN new tasks to fill gaps
+6. VERIFY integration (can frontend actually call backend?)
+7. ENFORCE full 8-stage validation before marking complete
+8. REPEAT until objective is truly met
+```
+
+### Key Behaviors
+
+| Behavior | Description |
+|----------|-------------|
+| **Objective Parsing** | Uses Claude to extract concrete requirements from objective text |
+| **Reality Checking** | Inspects actual files, checks endpoints exist, verifies test coverage |
+| **Gap Detection** | "Objective mentions auth, but no auth middleware exists" |
+| **Task Spawning** | Creates specific tasks: "Implement POST /edges endpoint" |
+| **Integration Testing** | For multi-project: starts both services, runs real requests |
+| **Validation Enforcement** | Won't sign off until all 8 phases pass with real tests |
+| **Completion Gate** | Project can't be marked "done" without heartbeat approval |
+
+### Multi-Project Integration
+
+For objectives spanning multiple projects (e.g., nexus-api + nexus-web):
+
+1. **Starts all project services** on their allocated ports
+2. **Runs real integration tests** - frontend calls backend
+3. **Verifies data flow** - create via UI, verify in DB
+4. **Takes screenshots** as proof of working features
+5. **Only marks complete** when everything works together
+
+### Configuration
+
+```yaml
+# config.yaml
+heartbeat:
+  enabled: true
+  interval_seconds: 300  # 5 minutes
+  use_claude_analysis: true
+  integration_testing:
+    enabled: true
+    start_services: true
+    take_screenshots: true
+  completion_gate:
+    require_all_validation_stages: true
+    require_integration_tests: true
+    allowed_failed_tasks: 0
+```
+
+### Files
+
+| File | Purpose |
+|------|---------|
+| `orchestrator/heartbeat_agent.py` | HeartbeatAgent class |
+| `orchestrator/config.py` | HeartbeatConfig, CompletionGateConfig |
+| `config.yaml` | Heartbeat configuration |
+
+---
+
 ## QUESTION/ANSWER SYSTEM
 
 ### How Questions Work

@@ -35,6 +35,7 @@ Give it an objective like *"Build a todo app with React and FastAPI"* and watch 
 - [Designer Agent](#designer-agent)
 - [Project Continuity](#project-continuity)
 - [Multi-Project Support](#multi-project-support)
+- [Heartbeat Agent](#heartbeat-agent)
 - [Validation Pipeline](#validation-pipeline)
 - [Memory System](#memory-system)
 - [Self-Generating Ecosystem](#self-generating-ecosystem)
@@ -546,11 +547,51 @@ Projects share data through `/workspace/.shared/`:
 ./clopus objective "Build NEXUS Web frontend with React - connects to nexus-api"
 ```
 
-Both projects build in parallel:
-- **nexus-api**: Implements endpoints, generates OpenAPI spec
-- **nexus-web**: Builds UI, uses API spec for type generation
+## Heartbeat Agent
 
-Workers automatically receive cross-project context in their task descriptions.
+The Heartbeat Agent (Completion Guardian) is a periodic supervisor that ensures projects actually meet their objectives. It's the "little voice in the head" asking: **"Did we actually build what we promised?"**
+
+### Why It Exists
+
+Without the Heartbeat Agent, CLOPUS could mark a project "complete" even if:
+- API endpoints were scaffolded but not implemented
+- Tests pass but mock everything
+- Frontend and backend don't actually work together
+- Only 3 of 8 validation stages ran
+
+### How It Works
+
+Every 5 minutes, the Heartbeat Agent:
+
+1. **Reads the original objective** and extracts concrete requirements using Claude
+2. **Assesses current project state** - files, endpoints, tests, validation results
+3. **Compares reality vs requirements** - "objective says edges, but no `/edges` endpoint exists"
+4. **Spawns tasks to fill gaps** - creates specific remediation tasks
+5. **Runs integration tests** - for multi-project, starts services and tests real interactions
+6. **Enforces validation** - won't approve until all 8 stages pass
+
+### Completion Gate
+
+A project cannot be marked complete until:
+
+- ✅ All 8 validation stages pass (syntax, lint, build, unit_tests, integration_tests, e2e_tests, security, review)
+- ✅ No failed tasks remain
+- ✅ All requirements from objective are met (verified by Claude)
+- ✅ Integration tests pass (for multi-project objectives)
+
+### Configuration
+
+```yaml
+# config.yaml
+heartbeat:
+  enabled: true
+  interval_seconds: 300  # 5 minutes
+  use_claude_analysis: true
+  completion_gate:
+    require_all_validation_stages: true
+    require_integration_tests: true
+    allowed_failed_tasks: 0
+```
 
 ## Validation Pipeline
 

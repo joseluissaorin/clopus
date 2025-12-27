@@ -105,6 +105,33 @@ class InterfaceConfig(BaseModel):
     answers_dir: str = "/app/answers"
 
 
+class IntegrationTestingConfig(BaseModel):
+    """Integration testing configuration."""
+    enabled: bool = True
+    start_services: bool = True
+    timeout_seconds: int = 120
+    take_screenshots: bool = True
+
+
+class CompletionGateConfig(BaseModel):
+    """Completion gate configuration."""
+    require_all_validation_stages: bool = True
+    require_integration_tests: bool = True
+    require_e2e_tests: bool = True
+    allowed_failed_tasks: int = 0
+
+
+class HeartbeatConfig(BaseModel):
+    """Heartbeat Agent (Completion Guardian) configuration."""
+    enabled: bool = True
+    interval_seconds: int = 300  # 5 minutes
+    first_check_delay_seconds: int = 30
+    use_claude_analysis: bool = True
+    model: str = "claude-sonnet-4-20250514"
+    integration_testing: IntegrationTestingConfig = IntegrationTestingConfig()
+    completion_gate: CompletionGateConfig = CompletionGateConfig()
+
+
 class Settings(BaseSettings):
     """Main settings loaded from environment."""
 
@@ -153,6 +180,7 @@ class Settings(BaseSettings):
     services_config: ServicesConfig = ServicesConfig()
     email_config: EmailConfig = EmailConfig()
     interface_config: InterfaceConfig = InterfaceConfig()
+    heartbeat_config: HeartbeatConfig = HeartbeatConfig()
 
     class Config:
         env_prefix = ""
@@ -193,6 +221,18 @@ def load_config(config_path: Optional[str] = None) -> Settings:
                 settings.email_config = EmailConfig(**config_data["email"])
             if "interface" in config_data:
                 settings.interface_config = InterfaceConfig(**config_data["interface"])
+            if "heartbeat" in config_data:
+                heartbeat_data = config_data["heartbeat"]
+                # Handle nested configs
+                if "integration_testing" in heartbeat_data:
+                    heartbeat_data["integration_testing"] = IntegrationTestingConfig(
+                        **heartbeat_data["integration_testing"]
+                    )
+                if "completion_gate" in heartbeat_data:
+                    heartbeat_data["completion_gate"] = CompletionGateConfig(
+                        **heartbeat_data["completion_gate"]
+                    )
+                settings.heartbeat_config = HeartbeatConfig(**heartbeat_data)
 
     return settings
 

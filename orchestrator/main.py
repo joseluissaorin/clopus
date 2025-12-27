@@ -35,6 +35,7 @@ from .design_system import get_design_system, get_consultation_queue, DesignSyst
 from .project_state import get_state_manager, ProjectStateManager, ProjectState
 from .project_resumption import get_resumption_generator, create_resumption_objective
 from .shared_context import get_shared_context, SharedContextManager
+from .heartbeat_agent import HeartbeatAgent, get_heartbeat_agent
 from validation.pipeline import ValidationPipeline
 
 # Configure logging
@@ -71,6 +72,9 @@ class Orchestrator:
         self.validation_pipeline: Optional[ValidationPipeline] = None
         self.project_setup: Optional[ProjectSetup] = None
         self.shared_context: Optional[SharedContextManager] = None
+
+        # Heartbeat agent (completion guardian)
+        self.heartbeat_agent: Optional[HeartbeatAgent] = None
 
     async def initialize(self) -> None:
         """Initialize all components."""
@@ -182,6 +186,17 @@ class Orchestrator:
         self.capability_installer = CapabilityInstaller(self.worker_pool)
         logger.info("Capability installer initialized")
 
+        # Initialize heartbeat agent (completion guardian)
+        heartbeat_interval = self.settings.heartbeat_config.interval_seconds if hasattr(self.settings, 'heartbeat_config') else 300
+        self.heartbeat_agent = get_heartbeat_agent(
+            memory=self.memory,
+            state_manager=self.state_manager,
+            shared_context=self.shared_context,
+            heartbeat_interval_seconds=heartbeat_interval,
+            workspace_path=self.settings.workspace_path
+        )
+        logger.info(f"Heartbeat agent initialized (interval: {heartbeat_interval}s)")
+
         self.knowledge_base = KnowledgeBase(self.memory, "/app/knowledge")
         logger.info("Knowledge base initialized")
 
@@ -238,6 +253,7 @@ class Orchestrator:
             asyncio.create_task(self._answer_watcher()),
             asyncio.create_task(self._worker_monitor()),
             asyncio.create_task(self._status_loop()),
+            asyncio.create_task(self._heartbeat_loop()),  # Completion guardian
         ]
 
         # Wait for shutdown
@@ -795,6 +811,39 @@ class Orchestrator:
             except Exception as e:
                 logger.error(f"Error in status loop: {e}")
                 await asyncio.sleep(5)
+
+    async def _heartbeat_loop(self) -> None:
+        """
+        Heartbeat agent loop - The Completion Guardian.
+
+        Periodically analyzes all active objectives to ensure:
+        1. Requirements from objectives are actually being met
+        2. All 8 validation stages pass
+        3. Multi-project integrations work together
+        4. Projects don't get marked complete prematurely
+        """
+        logger.info("Heartbeat loop started (Completion Guardian)")
+
+        # Wait a bit for other systems to initialize
+        await asyncio.sleep(30)
+
+        while self.running:
+            try:
+                if self.heartbeat_agent:
+                    await self.heartbeat_agent._heartbeat_cycle()
+
+                # Get interval from config or use default (5 minutes)
+                interval = 300
+                if hasattr(self.settings, 'heartbeat_config'):
+                    interval = self.settings.heartbeat_config.interval_seconds
+
+                await asyncio.sleep(interval)
+
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Error in heartbeat loop: {e}", exc_info=True)
+                await asyncio.sleep(60)  # Wait a minute before retrying
 
     # =========================================================================
     # PROJECT PATH DETECTION

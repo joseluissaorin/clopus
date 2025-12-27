@@ -233,6 +233,26 @@ mcp_servers:
     - github
 
 # =============================================================================
+# Heartbeat Agent (Completion Guardian)
+# =============================================================================
+heartbeat:
+  enabled: true
+  interval_seconds: 300  # 5 minutes between cycles
+  first_check_delay_seconds: 30  # Wait before first check
+  use_claude_analysis: true  # Use Claude for intelligent gap detection
+  model: "claude-sonnet-4-20250514"  # Model for analysis
+  integration_testing:
+    enabled: true
+    start_services: true  # Auto-start project services for testing
+    timeout_seconds: 120
+    take_screenshots: true
+  completion_gate:
+    require_all_validation_stages: true
+    require_integration_tests: true  # For multi-project objectives
+    require_e2e_tests: true
+    allowed_failed_tasks: 0  # No failures allowed for completion
+
+# =============================================================================
 # Monitoring
 # =============================================================================
 monitoring:

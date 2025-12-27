@@ -191,6 +191,25 @@ class SharedContextManager:
             if l["source"] == project_name
         ]
 
+    def get_linked_projects(self, project_name: str) -> List[str]:
+        """
+        Get all projects linked to this project (both dependencies and dependents).
+
+        Returns:
+            List of project names that are linked to this project
+        """
+        linked = set()
+
+        # Add dependencies
+        for dep in self.get_project_dependencies(project_name):
+            linked.add(dep["project"])
+
+        # Add dependents
+        for dep in self.get_project_dependents(project_name):
+            linked.add(dep["project"])
+
+        return list(linked)
+
     def get_shared_context_for_project(self, project_name: str) -> str:
         """
         Generate a context string for workers about shared data.
