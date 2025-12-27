@@ -610,3 +610,53 @@ When all stages complete, project is marked as `status: completed`.
 Workspace is now isolated to `~/Dev/clopus-projects` to prevent future accidents.
 
 **2025-12-27 (Afternoon)**: Workers were stuck on old tasks after orchestrator restart. Root cause: stale IPC files in `/app/ipc/tasks/`. Fixed by clearing IPC files during worker pool initialization.
+
+**2025-12-27 (Evening)**: Duplicate tasks created on orchestrator restart. Root cause: `MemoryClient.create_tasks()` had no deduplication logic - each restart would create new tasks even if identical ones existed. Fixed by adding deduplication in `orchestrator/memory_client.py:132-183` that checks for existing tasks with the same title before creating new ones.
+
+**2025-12-27 (Night)**: Implemented multi-project support for building related projects in parallel. Key changes:
+- Added `shared_context.py` for cross-project artifact sharing via `/workspace/.shared/`
+- Fixed worker dispatch to use correct project-specific `cwd` instead of `/workspace` root
+- Added `_get_project_path_for_task()` helper for consistent project path detection
+- Task descriptions now include `Project Path:` for proper worker routing
+- Projects can be linked (e.g., nexus-web depends on nexus-api) with shared artifacts
+
+---
+
+## MULTI-PROJECT SUPPORT
+
+CLOPUS can now build multiple related projects in parallel with shared context.
+
+### How It Works
+
+1. **Shared Context Directory**: `/workspace/.shared/` stores cross-project data
+2. **Project Links**: Defined in `index.json` with source, target, and shared artifacts
+3. **Automatic Context Injection**: Workers receive dependency info in task descriptions
+4. **Parallel Development**: Both projects build simultaneously where possible
+
+### Key Files
+
+| File | Purpose |
+|------|---------|
+| `/workspace/.shared/index.json` | Project registry and link definitions |
+| `/workspace/.shared/{project}/` | Project-specific shared artifacts |
+| `orchestrator/shared_context.py` | SharedContextManager class |
+| `orchestrator/main.py:775-833` | `_get_project_path_for_task()` helper |
+
+### Creating Project Links
+
+```python
+# In orchestrator or via shared context
+shared_context.link_projects(
+    source_project="nexus-api",
+    target_project="nexus-web",
+    link_type="api_consumer",
+    shared_artifacts=["api-info.json"]
+)
+```
+
+### Shared Artifacts
+
+Common artifact types:
+- `api-info.json` - API endpoints, OpenAPI spec location
+- `design-tokens.json` - Shared colors, spacing, typography
+- `config.json` - Environment variables, ports, URLs

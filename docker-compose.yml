@@ -158,6 +158,15 @@ services:
       WORKER_ROLE: debugger
       IPC_PATH: /app/ipc
 
+  worker-6:
+    <<: *worker-common
+    container_name: clopus-worker-6
+    environment:
+      <<: *common-env
+      WORKER_ID: 6
+      WORKER_ROLE: designer
+      IPC_PATH: /app/ipc
+
   # ===========================================================================
   # TIER 1: CORE SERVICES (Always Running)
   # ===========================================================================

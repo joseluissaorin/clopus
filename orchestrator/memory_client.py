@@ -134,19 +134,43 @@ class MemoryClient:
         objective_id: str,
         tasks: List[Dict]
     ) -> List[Task]:
-        """Create multiple tasks for an objective."""
+        """Create multiple tasks for an objective with deduplication.
+
+        Tasks with the same title that already exist (and are not completed/failed)
+        will be skipped to prevent duplicate task creation on orchestrator restart.
+        """
         created_tasks = []
 
+        # Get existing tasks for this objective to prevent duplicates
+        existing_tasks = await self.short_term.get_tasks_for_objective(objective_id)
+        existing_titles = {
+            task.title for task in existing_tasks
+            if task.status not in (TaskStatus.COMPLETED, TaskStatus.FAILED)
+        }
+
         for task_def in tasks:
+            title = task_def["title"]
+
+            # Skip if task with this title already exists (and is not completed/failed)
+            if title in existing_titles:
+                await self.short_term.log_activity(
+                    source="orchestrator",
+                    action="task_skipped_duplicate",
+                    details={"title": title, "reason": "duplicate"},
+                    objective_id=objective_id
+                )
+                continue
+
             task = await self.short_term.create_task(
                 objective_id=objective_id,
-                title=task_def["title"],
+                title=title,
                 description=task_def.get("description"),
                 priority=task_def.get("priority", 5),
                 dependencies=task_def.get("dependencies", []),
                 worker_role=task_def.get("worker_role")
             )
             created_tasks.append(task)
+            existing_titles.add(title)  # Prevent duplicates within same batch
 
             await self.short_term.log_activity(
                 source="orchestrator",

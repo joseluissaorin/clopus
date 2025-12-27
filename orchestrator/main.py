@@ -34,6 +34,7 @@ from .project_docs import get_docs_generator, ProjectDocsGenerator
 from .design_system import get_design_system, get_consultation_queue, DesignSystem
 from .project_state import get_state_manager, ProjectStateManager, ProjectState
 from .project_resumption import get_resumption_generator, create_resumption_objective
+from .shared_context import get_shared_context, SharedContextManager
 from validation.pipeline import ValidationPipeline
 
 # Configure logging
@@ -69,6 +70,7 @@ class Orchestrator:
         self.template_extractor: Optional[TemplateExtractor] = None
         self.validation_pipeline: Optional[ValidationPipeline] = None
         self.project_setup: Optional[ProjectSetup] = None
+        self.shared_context: Optional[SharedContextManager] = None
 
     async def initialize(self) -> None:
         """Initialize all components."""
@@ -173,6 +175,9 @@ class Orchestrator:
 
         self.project_setup = ProjectSetup("/workspace")
         logger.info("Project setup initialized")
+
+        self.shared_context = get_shared_context()
+        logger.info("Shared context manager initialized")
 
         self.capability_installer = CapabilityInstaller(self.worker_pool)
         logger.info("Capability installer initialized")
@@ -482,11 +487,30 @@ class Orchestrator:
             tasks = await self.task_planner.plan(objective.id, parsed)
             logger.info(f"Created {len(tasks)} tasks for objective")
 
-            # Create tasks in memory
+            # Create tasks in memory with project context
+            # Inject project_path and shared context into task descriptions
+            def enhance_task_description(task_def: dict) -> str:
+                base_desc = task_def.get("description") or ""
+                enhancements = []
+
+                # Add project path if not already present
+                if project_path not in base_desc:
+                    enhancements.append(f"Project Path: {project_path}")
+
+                # Add shared context for cross-project dependencies
+                if self.shared_context:
+                    shared_info = self.shared_context.get_shared_context_for_project(project_name)
+                    if shared_info:
+                        enhancements.append(shared_info)
+
+                if enhancements:
+                    return base_desc + "\n\n" + "\n\n".join(enhancements)
+                return base_desc
+
             await self.memory.create_tasks(objective.id, [
                 {
                     "title": t["title"],
-                    "description": t.get("description"),
+                    "description": enhance_task_description(t),
                     "priority": t.get("priority", 5),
                     "dependencies": t.get("dependencies", []),
                     "worker_role": t.get("worker_role")
@@ -535,12 +559,16 @@ class Orchestrator:
                 except Exception:
                     pass
 
-                # Dispatch to worker with context
+                # Determine correct project path for this task
+                project_path = self._get_project_path_for_task(task)
+
+                # Dispatch to worker with correct cwd and context
                 await self.worker_pool.dispatch_task(
                     worker.id,
                     task.id,
                     task.title,
                     task.description,
+                    cwd=project_path,
                     relevant_skills=relevant_skills if relevant_skills else None,
                     memory_context=memory_context
                 )
@@ -769,6 +797,70 @@ class Orchestrator:
                 await asyncio.sleep(5)
 
     # =========================================================================
+    # PROJECT PATH DETECTION
+    # =========================================================================
+
+    def _get_project_path_for_task(self, task) -> str:
+        """
+        Determine the correct project path for a task.
+
+        Uses 4-priority detection:
+        1. Task metadata (resumption tasks)
+        2. Task description patterns
+        3. Task result patterns
+        4. Auto-detect most recent project
+
+        Returns: Project path string (e.g., "/workspace/nexus-api")
+        """
+        import re
+
+        project_path = None
+
+        # PRIORITY 1: Extract from task metadata (resumption tasks)
+        if hasattr(task, 'metadata') and task.metadata:
+            if isinstance(task.metadata, dict):
+                project_path = task.metadata.get('project_path')
+
+        # PRIORITY 2: Extract from task description
+        if not project_path and task.description:
+            # Look for explicit project path mentions
+            path_match = re.search(r'(?:Project Path:|Project:)\s*(/workspace/[\w\-]+)', task.description)
+            if path_match:
+                project_path = path_match.group(1)
+            else:
+                # Look for any workspace path
+                path_match = re.search(r'/workspace/([\w\-]+)', task.description)
+                if path_match:
+                    project_path = f"/workspace/{path_match.group(1)}"
+
+        # PRIORITY 3: Extract from task result
+        if not project_path and hasattr(task, 'result') and task.result and isinstance(task.result, str):
+            path_match = re.search(r'/workspace/([\w\-]+)', task.result)
+            if path_match:
+                project_path = f"/workspace/{path_match.group(1)}"
+
+        # PRIORITY 4: Find most recently modified project
+        if not project_path:
+            workspace = Path("/workspace")
+            if workspace.exists():
+                projects = [
+                    p for p in workspace.iterdir()
+                    if p.is_dir() and not p.name.startswith('.')
+                    and ((p / "package.json").exists() or (p / "requirements.txt").exists() or (p / ".clopus").exists())
+                ]
+                if projects:
+                    # Sort by modification time, most recent first
+                    projects.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+                    project_path = str(projects[0])
+                    logger.debug(f"Auto-detected project for task: {project_path}")
+
+        # Fallback to workspace root
+        if not project_path:
+            project_path = "/workspace"
+
+        return project_path
+
+    # =========================================================================
     # VALIDATION & SELF-GENERATING ECOSYSTEM
     # =========================================================================
 
@@ -780,62 +872,8 @@ class Orchestrator:
         Returns True if validation passed, False if failed.
         """
         try:
-            import re
-            from pathlib import Path
-
-            # Determine project path from task context
-            project_path = None
-
-            # =================================================================
-            # PRIORITY 1: Extract from task metadata (resumption tasks)
-            # =================================================================
-            if hasattr(task, 'metadata') and task.metadata:
-                if isinstance(task.metadata, dict):
-                    project_path = task.metadata.get('project_path')
-
-            # =================================================================
-            # PRIORITY 2: Extract from task description
-            # =================================================================
-            if not project_path and task.description:
-                # Look for explicit project path mentions
-                path_match = re.search(r'(?:Project Path:|Project:)\s*(/workspace/[\w\-]+)', task.description)
-                if path_match:
-                    project_path = path_match.group(1)
-                else:
-                    # Look for any workspace path
-                    path_match = re.search(r'/workspace/([\w\-]+)', task.description)
-                    if path_match:
-                        project_path = f"/workspace/{path_match.group(1)}"
-
-            # =================================================================
-            # PRIORITY 3: Extract from task result
-            # =================================================================
-            if not project_path and task.result and isinstance(task.result, str):
-                path_match = re.search(r'/workspace/([\w\-]+)', task.result)
-                if path_match:
-                    project_path = f"/workspace/{path_match.group(1)}"
-
-            # =================================================================
-            # PRIORITY 4: Find most recently modified project
-            # =================================================================
-            if not project_path:
-                workspace = Path("/workspace")
-                if workspace.exists():
-                    projects = [
-                        p for p in workspace.iterdir()
-                        if p.is_dir() and not p.name.startswith('.')
-                        and ((p / "package.json").exists() or (p / "requirements.txt").exists())
-                    ]
-                    if projects:
-                        # Sort by modification time, most recent first
-                        projects.sort(key=lambda p: p.stat().st_mtime, reverse=True)
-                        project_path = str(projects[0])
-                        logger.info(f"Auto-detected project: {project_path}")
-
-            # Fallback to workspace root (will likely fail but logs the issue)
-            if not project_path:
-                project_path = "/workspace"
-                logger.warning("Could not determine project path, using /workspace root")
+            # Use the shared project path detection helper
+            project_path = self._get_project_path_for_task(task)
 
             logger.info(f"[MANDATORY VALIDATION] Running on {project_path} for task {task.id}")
 

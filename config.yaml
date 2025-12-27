@@ -20,7 +20,7 @@ auth:
 # Worker Configuration
 # =============================================================================
 workers:
-  count: 5
+  count: 6
   model: "claude-sonnet-4-20250514"
   roles:
     - coder
@@ -28,7 +28,7 @@ workers:
     - reviewer
     - researcher
     - debugger
-    - deployer
+    - designer
   max_concurrent_tasks: 3
   poll_interval_ms: 500
   ipc_path: "./ipc/tasks"

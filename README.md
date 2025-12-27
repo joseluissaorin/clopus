@@ -34,6 +34,7 @@ Give it an objective like *"Build a todo app with React and FastAPI"* and watch 
 - [Worker Roles](#worker-roles)
 - [Designer Agent](#designer-agent)
 - [Project Continuity](#project-continuity)
+- [Multi-Project Support](#multi-project-support)
 - [Validation Pipeline](#validation-pipeline)
 - [Memory System](#memory-system)
 - [Self-Generating Ecosystem](#self-generating-ecosystem)
@@ -494,6 +495,63 @@ Every project gets auto-generated documentation with live state:
 - **URL:** http://localhost:3142
 ```
 
+## Multi-Project Support
+
+CLOPUS can build multiple related projects in parallel with shared context.
+
+### Cross-Project Dependencies
+
+When building full-stack applications (e.g., API + Frontend), CLOPUS:
+
+1. **Links Projects**: Establishes relationships between projects (e.g., `nexus-web` depends on `nexus-api`)
+2. **Shares Context**: Projects can share artifacts like OpenAPI specs, design tokens, and configuration
+3. **Parallel Development**: Both projects build simultaneously where possible
+4. **Smart Routing**: Workers receive the correct project context via task descriptions
+
+### Shared Context Directory
+
+Projects share data through `/workspace/.shared/`:
+
+```
+/workspace/.shared/
+├── index.json              # Project registry and links
+├── nexus-api/
+│   └── api-info.json       # API endpoint information
+└── nexus-web/
+    └── design-tokens.json  # Shared design system
+```
+
+### Project Links
+
+```json
+{
+  "links": [
+    {
+      "source": "nexus-api",
+      "target": "nexus-web",
+      "type": "api_consumer",
+      "artifacts": ["api-info.json"]
+    }
+  ]
+}
+```
+
+### Example: Full-Stack Application
+
+```bash
+# Submit API backend objective
+./clopus objective "Build NEXUS API with FastAPI - knowledge graph backend"
+
+# Submit frontend objective (references API)
+./clopus objective "Build NEXUS Web frontend with React - connects to nexus-api"
+```
+
+Both projects build in parallel:
+- **nexus-api**: Implements endpoints, generates OpenAPI spec
+- **nexus-web**: Builds UI, uses API spec for type generation
+
+Workers automatically receive cross-project context in their task descriptions.
+
 ## Validation Pipeline
 
 All generated code must pass 8 validation stages:
@@ -915,7 +973,7 @@ docker-compose build
 
 ### v3.1 (Next)
 - [ ] Web UI dashboard
-- [ ] Multi-project management
+- [x] Multi-project management *(implemented)*
 - [ ] Cost tracking and budgets
 - [ ] Custom worker roles
 
