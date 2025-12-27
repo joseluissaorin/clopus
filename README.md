@@ -22,7 +22,7 @@
 
 **CLOPUS** (Claude-based Locally Orchestrated Production Unified System) is a fully autonomous development system that orchestrates multiple Claude Code instances to build complete software projects with minimal human intervention.
 
-Give it an objective like *"Build a todo app with React and FastAPI"* and watch as 5 specialized AI workers collaborate to design, implement, test, and validate production-ready code.
+Give it an objective like *"Build a todo app with React and FastAPI"* and watch as 6 specialized AI workers collaborate to design, implement, test, and validate production-ready code.
 
 ## Table of Contents
 
@@ -32,6 +32,8 @@ Give it an objective like *"Build a todo app with React and FastAPI"* and watch 
 - [Usage](#usage)
 - [Architecture](#architecture)
 - [Worker Roles](#worker-roles)
+- [Designer Agent](#designer-agent)
+- [Project Continuity](#project-continuity)
 - [Validation Pipeline](#validation-pipeline)
 - [Memory System](#memory-system)
 - [Self-Generating Ecosystem](#self-generating-ecosystem)
@@ -54,11 +56,13 @@ Traditional AI coding assistants require constant human guidance. CLOPUS takes a
 | Traditional AI Coding | CLOPUS |
 |----------------------|--------|
 | Single conversation context | Persistent memory across sessions |
-| One task at a time | 5 parallel specialized workers |
+| One task at a time | 6 parallel specialized workers |
 | Manual testing | 8-stage automated validation |
 | No learning | Learns from every project |
 | Basic code generation | Full project scaffolding + deployment |
 | Asks for everything | Only asks when genuinely uncertain |
+| No design consistency | Designer agent creates unified branding |
+| Loses progress on restart | Project continuity system resumes work |
 
 ### Key Differentiators
 
@@ -71,9 +75,16 @@ Traditional AI coding assistants require constant human guidance. CLOPUS takes a
 ## Features
 
 ### Multi-Agent Architecture
-- **5 Parallel Workers**: Specialized roles (Coder, Tester, Reviewer, Researcher, Debugger) work concurrently
+- **6 Parallel Workers**: Specialized roles (Coder, Tester, Reviewer, Researcher, Debugger, Designer) work concurrently
 - **Intelligent Task Distribution**: Orchestrator assigns tasks based on worker specialization and workload
 - **File-Based IPC**: Simple, debuggable communication via JSON files
+- **Designer Agent**: Creates comprehensive branding and design systems before implementation
+
+### Project Continuity
+- **Automatic Resumption**: Incomplete projects are automatically resumed on restart
+- **State Tracking**: Every project has a state file tracking progress, validation, and dev server
+- **Port Management**: Dynamic port allocation with availability checking
+- **PROJECT.md**: Live documentation showing current status, validation results, and running state
 
 ### Python Orchestrator
 - **Async Everything**: Built on asyncio for maximum concurrency
@@ -230,24 +241,29 @@ Starting CLOPUS v3...
   [OK] Worker 3 (Reviewer)
   [OK] Worker 4 (Researcher)
   [OK] Worker 5 (Debugger)
+  [OK] Worker 6 (Designer)
+Scanning for incomplete projects...
+  Found 1 incomplete project(s)
+  [RESUME] todo-app (validation: 4/8, e2e: pending)
 System ready.
 
 $ ./clopus objective "Build a blog with Next.js, markdown support, and dark mode"
 Objective submitted: obj_a1b2c3d4
 Parsing objective...
 Detected: Next.js project with MDX support
-Planning 12 tasks across 5 workers...
+Planning 13 tasks across 6 workers...
 Started.
 
 $ ./clopus status
 Objective: Build a blog with Next.js...
-Progress: 7/12 tasks (58%)
+Progress: 7/13 tasks (54%)
 Workers:
   - Coder: implementing dark mode toggle
   - Tester: writing component tests
   - Reviewer: reviewing navigation component
   - Researcher: idle
   - Debugger: idle
+  - Designer: completed design system
 Validation: 6 passed, 0 failed
 
 $ ./clopus questions
@@ -302,13 +318,13 @@ Done! Project available at: /workspace/projects/blog-nextjs
         │                       │                       │
         └───────────────────────┼───────────────────────┘
                                 │
-                    ┌───────────┴───────────┐
-                    ▼                       ▼
-            ┌───────────────┐       ┌───────────────┐
-            │   Worker 4    │       │   Worker 5    │
-            │ (Researcher)  │       │  (Debugger)   │
-            │  Claude Code  │       │  Claude Code  │
-            └───────────────┘       └───────────────┘
+        ┌───────────────────────┼───────────────────────┐
+        ▼                       ▼                       ▼
+┌───────────────┐       ┌───────────────┐       ┌───────────────┐
+│   Worker 4    │       │   Worker 5    │       │   Worker 6    │
+│ (Researcher)  │       │  (Debugger)   │       │  (Designer)   │
+│  Claude Code  │       │  Claude Code  │       │  Claude Code  │
+└───────────────┘       └───────────────┘       └───────────────┘
                                 │
         ┌───────────────────────┼───────────────────────┐
         ▼                       ▼                       ▼
@@ -322,7 +338,7 @@ Done! Project available at: /workspace/projects/blog-nextjs
 
 **Tier 1 (Always Running)**:
 - Orchestrator
-- 5 Claude Code Workers
+- 6 Claude Code Workers (Coder, Tester, Reviewer, Researcher, Debugger, Designer)
 - SQLite
 - ChromaDB
 
@@ -347,11 +363,136 @@ Each worker runs a full Claude Code instance with role-specific system prompts a
 | Worker 3 | **Reviewer** | Code review, security, best practices | security-audit, code-review |
 | Worker 4 | **Researcher** | Documentation, API research, solutions | web-search, documentation-reader |
 | Worker 5 | **Debugger** | Bug fixing, performance, troubleshooting | debugging, performance-profiling |
+| Worker 6 | **Designer** | Branding, design systems, visual consistency | design-system, ui-ux |
 
 Workers communicate via file-based IPC:
 - `ipc/tasks/{worker_id}/pending.json` - Tasks for worker
 - `ipc/tasks/{worker_id}/status.json` - Worker status
 - `ipc/tasks/{worker_id}/result.json` - Task results
+
+## Designer Agent
+
+The Designer is a specialized worker that creates comprehensive branding and design documentation before implementation begins.
+
+### Responsibilities
+
+1. **Early in Project**: Creates complete design system after project setup
+2. **For Existing Projects**: Analyzes and documents existing branding
+3. **Ongoing Support**: Other workers can request design guidance
+4. **Screenshot Review**: Reviews E2E test screenshots for visual quality
+
+### Design System Output
+
+The Designer creates `.clopus/design/DESIGN_SYSTEM.md` containing:
+
+- **Brand Identity**: Project name, tagline, personality
+- **Color Palette**: Primary, secondary, accent colors (with dark mode)
+- **Typography**: Font families, type scale, weights
+- **Spacing System**: Consistent spacing scale (4px base)
+- **Component Styles**: Buttons, inputs, cards, navigation
+- **Animation Guidelines**: Transition timing and motion principles
+
+### Workflow
+
+```
+1. Setup task completes
+2. DESIGNER creates design system ← Runs early (priority 9)
+3. CODER follows design system when implementing
+4. TESTER takes screenshots
+5. DESIGNER reviews screenshots (optional)
+```
+
+## Project Continuity
+
+CLOPUS automatically resumes incomplete projects across restarts.
+
+### How It Works
+
+```
+CLOPUS STARTS
+    │
+    ▼
+┌─────────────────────────────────┐
+│  SCAN /workspace FOR PROJECTS   │
+│  Look for .clopus/project_state │
+└─────────────────────────────────┘
+    │
+    ▼
+┌─────────────────────────────────┐
+│  FOR EACH INCOMPLETE PROJECT:   │
+│  1. Load state file             │
+│  2. Check dev server status     │
+│  3. Detect port conflicts       │
+│  4. Create resumption tasks     │
+└─────────────────────────────────┘
+    │
+    ▼
+┌─────────────────────────────────┐
+│  QUEUE RESUMPTION TASKS         │
+│  - Fix port allocation          │
+│  - Run pending validation       │
+│  - Run E2E tests                │
+│  - Generate PROJECT.md          │
+└─────────────────────────────────┘
+```
+
+### Project State
+
+Each project has `.clopus/project_state.json`:
+
+```json
+{
+  "project_name": "todo-app",
+  "status": "in_progress",
+  "stages": {
+    "setup": {"status": "completed"},
+    "design": {"status": "completed"},
+    "implementation": {"status": "completed"},
+    "validation": {"status": "partial"},
+    "e2e_testing": {"status": "pending"},
+    "documentation": {"status": "pending"}
+  },
+  "validation": {
+    "stages_passed": ["syntax", "lint", "build", "unit_tests"],
+    "stages_pending": ["e2e_tests", "security", "review"]
+  },
+  "dev_server": {
+    "running": true,
+    "port": 3142,
+    "url": "http://0.0.0.0:3142"
+  }
+}
+```
+
+### Dynamic Port Allocation
+
+- **Port Range**: 3100-3199 for CLOPUS projects
+- **Availability Check**: Tests if port is actually free before allocating
+- **Process Detection**: Finds and can kill processes on conflicting ports
+- **Registry**: Remembers port assignments across restarts
+
+### PROJECT.md
+
+Every project gets auto-generated documentation with live state:
+
+```markdown
+# Todo App
+
+> Status: **IN_PROGRESS** | Validation: 4/8 passed
+
+## Stage Progress
+| Stage | Status |
+|-------|--------|
+| Setup | [x] Completed |
+| Design | [x] Completed |
+| Implementation | [x] Completed |
+| Validation | [~] Partial |
+| E2E Testing | [ ] Pending |
+
+## Dev Server
+- **Port:** 3142
+- **URL:** http://localhost:3142
+```
 
 ## Validation Pipeline
 
@@ -590,7 +731,7 @@ ANTHROPIC_API_KEY=sk-ant-...       # For api mode
 GITHUB_TOKEN=ghp_...
 
 # Workers
-WORKERS=5
+WORKERS=6
 CLAUDE_MODEL=claude-sonnet-4-20250514
 
 # External Services (optional)
@@ -612,7 +753,8 @@ ONESIGNAL_APP_ID=...
 
 ```yaml
 workers:
-  count: 5
+  count: 6
+  roles: [coder, tester, reviewer, researcher, debugger, designer]
   heartbeat_interval: 30
   task_timeout: 3600
 

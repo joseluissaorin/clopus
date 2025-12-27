@@ -2,13 +2,16 @@
 # CLOPUS v3 Port Manager
 # =============================================================================
 """
-Dynamic port allocation with availability checking.
+Dynamic port allocation with availability checking and process management.
 """
 
 import socket
 import json
+import os
+import signal
+import subprocess
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Tuple, List
 import logging
 
 logger = logging.getLogger("clopus.port_manager")
@@ -130,6 +133,147 @@ class PortManager:
     def get_all_allocations(self) -> dict:
         """Get all current port allocations."""
         return self.registry.copy()
+
+    # =========================================================================
+    # PROCESS MANAGEMENT
+    # =========================================================================
+
+    def get_process_on_port(self, port: int) -> Optional[int]:
+        """Get the PID of process using a port."""
+        try:
+            result = subprocess.run(
+                ["lsof", "-ti", f":{port}"],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            if result.stdout.strip():
+                # Return first PID
+                pids = result.stdout.strip().split('\n')
+                return int(pids[0])
+        except (subprocess.TimeoutExpired, ValueError, FileNotFoundError):
+            pass
+
+        # Fallback: try fuser
+        try:
+            result = subprocess.run(
+                ["fuser", f"{port}/tcp"],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            if result.stdout.strip():
+                return int(result.stdout.strip().split()[0])
+        except (subprocess.TimeoutExpired, ValueError, FileNotFoundError):
+            pass
+
+        return None
+
+    def kill_process_on_port(self, port: int) -> bool:
+        """Kill the process using a specific port."""
+        pid = self.get_process_on_port(port)
+
+        if pid is None:
+            logger.info(f"No process found on port {port}")
+            return True  # Port is free
+
+        try:
+            # Try graceful shutdown first
+            os.kill(pid, signal.SIGTERM)
+            logger.info(f"Sent SIGTERM to PID {pid} on port {port}")
+
+            # Wait briefly and check if it's gone
+            import time
+            time.sleep(1)
+
+            if not self.is_port_available(port):
+                # Force kill
+                os.kill(pid, signal.SIGKILL)
+                logger.info(f"Sent SIGKILL to PID {pid} on port {port}")
+                time.sleep(0.5)
+
+            return self.is_port_available(port)
+
+        except (OSError, ProcessLookupError) as e:
+            logger.warning(f"Failed to kill PID {pid}: {e}")
+            return False
+
+    def ensure_port_available(self, port: int) -> bool:
+        """Ensure a port is available, killing any existing process."""
+        if self.is_port_available(port):
+            return True
+
+        logger.info(f"Port {port} in use, attempting to free it")
+        return self.kill_process_on_port(port)
+
+    def restart_on_correct_port(
+        self,
+        project_name: str,
+        current_port: int,
+        project_path: str
+    ) -> Tuple[bool, int]:
+        """
+        Restart a dev server on the correct allocated port.
+        Returns (success, new_port).
+        """
+        # Get allocated port
+        allocated_port = self.get_project_port(project_name)
+
+        if current_port == allocated_port:
+            logger.info(f"{project_name} already on correct port {allocated_port}")
+            return (True, allocated_port)
+
+        # Kill process on current port
+        if not self.is_port_available(current_port):
+            logger.info(f"Killing process on port {current_port}")
+            self.kill_process_on_port(current_port)
+
+        # Ensure allocated port is free
+        if not self.ensure_port_available(allocated_port):
+            logger.error(f"Could not free port {allocated_port}")
+            # Find another port
+            allocated_port = self._find_available_port(project_name)
+            self.registry[project_name] = allocated_port
+            self._save_registry()
+
+        logger.info(f"{project_name}: Switched from {current_port} to {allocated_port}")
+        return (True, allocated_port)
+
+    def get_running_servers(self) -> List[dict]:
+        """Get list of all running dev servers in our port range."""
+        running = []
+
+        for port in range(self.PORT_RANGE_START, self.PORT_RANGE_END):
+            if not self.is_port_available(port):
+                pid = self.get_process_on_port(port)
+                # Find which project owns this port
+                project = None
+                for name, assigned_port in self.registry.items():
+                    if assigned_port == port:
+                        project = name
+                        break
+
+                running.append({
+                    "port": port,
+                    "pid": pid,
+                    "project": project,
+                    "orphaned": project is None
+                })
+
+        return running
+
+    def cleanup_orphaned_servers(self) -> int:
+        """Kill any dev servers that aren't registered to a project."""
+        killed = 0
+        running = self.get_running_servers()
+
+        for server in running:
+            if server["orphaned"]:
+                if self.kill_process_on_port(server["port"]):
+                    killed += 1
+                    logger.info(f"Killed orphaned server on port {server['port']}")
+
+        return killed
 
 
 # Global instance

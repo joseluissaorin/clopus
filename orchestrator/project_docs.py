@@ -27,7 +27,8 @@ class ProjectDocsGenerator:
         tasks_completed: List[Dict[str, Any]],
         validation_results: Dict[str, Any],
         port: int,
-        branding: Optional[Dict[str, Any]] = None
+        branding: Optional[Dict[str, Any]] = None,
+        project_state: Optional[Dict[str, Any]] = None
     ) -> str:
         """
         Generate a comprehensive project documentation file.
@@ -48,7 +49,8 @@ class ProjectDocsGenerator:
             validation_results=validation_results,
             port=port,
             stack=stack,
-            branding=branding
+            branding=branding,
+            project_state=project_state
         )
 
         # Write documentation
@@ -170,7 +172,8 @@ class ProjectDocsGenerator:
         validation_results: Dict[str, Any],
         port: int,
         stack: Dict[str, Any],
-        branding: Optional[Dict[str, Any]] = None
+        branding: Optional[Dict[str, Any]] = None,
+        project_state: Optional[Dict[str, Any]] = None
     ) -> str:
         """Build the documentation markdown."""
 
@@ -186,20 +189,74 @@ class ProjectDocsGenerator:
         tasks_text = ""
         if tasks_completed:
             for task in tasks_completed[:10]:  # Limit to 10 tasks
-                status = "Done" if task.get("success") else "Failed"
-                tasks_text += f"- [{status}] {task.get('title', 'Unknown task')}\n"
+                status_icon = "x" if task.get("success") else " "
+                tasks_text += f"- [{status_icon}] {task.get('title', 'Unknown task')}\n"
         else:
             tasks_text = "- Project setup and implementation\n"
 
-        # Format validation
-        val_text = ""
-        stages = validation_results.get("stages", [])
-        if stages:
-            for stage in stages:
-                status = "Pass" if stage.get("passed") else "Fail"
-                val_text += f"- {stage.get('stage', 'Unknown').title()}: {status}\n"
+        # Build status section from project state
+        status_section = ""
+        if project_state:
+            overall_status = project_state.get("status", "unknown").upper()
+            stages = project_state.get("stages", {})
+            validation = project_state.get("validation", {})
+            dev_server = project_state.get("dev_server", {})
+
+            # Stage status table
+            stage_rows = []
+            for stage_name in ["setup", "design", "implementation", "validation", "e2e_testing", "documentation"]:
+                stage_info = stages.get(stage_name, {})
+                status = stage_info.get("status", "pending")
+                icon = "x" if status == "completed" else "~" if status == "in_progress" else " "
+                stage_rows.append(f"| {stage_name.replace('_', ' ').title()} | [{icon}] {status.title()} |")
+
+            # Validation details
+            val_passed = validation.get("stages_passed", [])
+            val_failed = validation.get("stages_failed", [])
+            val_pending = validation.get("stages_pending", [])
+            val_count = f"{len(val_passed)}/{len(val_passed) + len(val_failed) + len(val_pending)}"
+
+            # Dev server info
+            server_status = "Running" if dev_server.get("running") else "Stopped"
+            server_port = dev_server.get("port") or dev_server.get("allocated_port") or port
+            server_url = dev_server.get("url") or f"http://localhost:{server_port}"
+
+            status_section = f"""
+## Current Status
+
+> **Overall: {overall_status}** | Validation: {val_count} passed
+
+### Stage Progress
+
+| Stage | Status |
+|-------|--------|
+{chr(10).join(stage_rows)}
+
+### Validation Details
+
+| Stage | Status |
+|-------|--------|
+{"".join(f'| {s.title()} | Passed |{chr(10)}' for s in val_passed)}{"".join(f'| {s.title()} | **FAILED** |{chr(10)}' for s in val_failed)}{"".join(f'| {s.title()} | Pending |{chr(10)}' for s in val_pending)}
+
+### Dev Server
+
+- **Status:** {server_status}
+- **Port:** {server_port}
+- **URL:** {server_url}
+
+---
+"""
         else:
-            val_text = "- All validation stages passed\n"
+            # Simple status if no state available
+            status_section = f"""
+## Dev Server
+
+- **Port:** {port}
+- **URL:** http://localhost:{port}
+- **Network:** http://<your-ip>:{port}
+
+---
+"""
 
         # Branding section
         branding_text = ""
@@ -212,6 +269,8 @@ class ProjectDocsGenerator:
 - **Secondary Color:** {branding.get('secondary_color', '#6366F1')}
 - **Accent Color:** {branding.get('accent_color', '#22D3EE')}
 - **Font:** {branding.get('font', 'Inter')}
+
+---
 """
 
         # Build the full document
@@ -226,20 +285,7 @@ class ProjectDocsGenerator:
 {objective}
 
 ---
-
-## Running the Project
-
-**Development Server:**
-```bash
-npm run dev
-```
-
-**URL:** http://localhost:{port}
-
-**Network Access:** http://<your-ip>:{port}
-
----
-
+{status_section}
 ## Technology Stack
 
 {stack_text}
@@ -251,12 +297,6 @@ npm run dev
 {tasks_text}
 
 ---
-
-## Validation Results
-
-{val_text}
-
----
 {branding_text}
 ## Project Structure
 
@@ -265,6 +305,9 @@ npm run dev
 ├── src/           # Source code
 ├── public/        # Static assets
 ├── tests/         # Test files
+├── .clopus/       # CLOPUS metadata
+│   ├── design/    # Design system
+│   └── project_state.json
 └── package.json   # Dependencies
 ```
 

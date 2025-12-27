@@ -32,6 +32,8 @@ from .knowledge_base import KnowledgeBase
 from .port_manager import get_port_manager, PortManager
 from .project_docs import get_docs_generator, ProjectDocsGenerator
 from .design_system import get_design_system, get_consultation_queue, DesignSystem
+from .project_state import get_state_manager, ProjectStateManager, ProjectState
+from .project_resumption import get_resumption_generator, create_resumption_objective
 from validation.pipeline import ValidationPipeline
 
 # Configure logging
@@ -182,6 +184,17 @@ class Orchestrator:
         self.design_system = get_design_system(self.memory)
         logger.info("Design system initialized")
 
+        # Initialize project state manager
+        self.state_manager = get_state_manager(self.settings.workspace_path)
+        logger.info("Project state manager initialized")
+
+        # Initialize resumption generator
+        self.resumption_generator = get_resumption_generator(
+            self.state_manager,
+            get_port_manager()
+        )
+        logger.info("Resumption generator initialized")
+
         # =====================================================================
         # CONNECT COMPONENTS FOR INTEGRATION
         # =====================================================================
@@ -207,6 +220,11 @@ class Orchestrator:
             action="started",
             details={"version": "3.0.0"}
         )
+
+        # =====================================================================
+        # SCAN FOR INCOMPLETE PROJECTS AND CREATE RESUMPTION TASKS
+        # =====================================================================
+        await self._scan_and_resume_projects()
 
         # Start background tasks
         tasks = [
@@ -246,6 +264,83 @@ class Orchestrator:
     def request_shutdown(self) -> None:
         """Request graceful shutdown."""
         self._shutdown_event.set()
+
+    # =========================================================================
+    # PROJECT RESUMPTION
+    # =========================================================================
+
+    async def _scan_and_resume_projects(self) -> None:
+        """
+        Scan workspace for incomplete projects and create resumption tasks.
+        Called on CLOPUS startup.
+        """
+        logger.info("Scanning for incomplete projects...")
+
+        try:
+            # Scan workspace for incomplete projects
+            incomplete_projects = await self.state_manager.scan_workspace()
+
+            if not incomplete_projects:
+                logger.info("No incomplete projects found")
+                return
+
+            logger.info(f"Found {len(incomplete_projects)} incomplete project(s)")
+
+            # Clean up orphaned dev servers first
+            port_manager = get_port_manager()
+            killed = port_manager.cleanup_orphaned_servers()
+            if killed:
+                logger.info(f"Cleaned up {killed} orphaned dev server(s)")
+
+            # Process each incomplete project
+            for state in incomplete_projects:
+                logger.info(f"Processing incomplete project: {state.project_name}")
+
+                # Handle port mismatches
+                if state.dev_server.get("needs_restart"):
+                    current_port = state.dev_server.get("port")
+                    if current_port:
+                        success, new_port = port_manager.restart_on_correct_port(
+                            state.project_name,
+                            current_port,
+                            state.project_path
+                        )
+                        if success:
+                            await self.state_manager.update_dev_server(
+                                state.project_path,
+                                running=False,  # Will be started by task
+                                allocated_port=new_port
+                            )
+
+                # Generate resumption tasks
+                tasks = await self.resumption_generator.generate_resumption_tasks(state)
+
+                if tasks:
+                    # Create or requeue the objective
+                    objective_id = await create_resumption_objective(state, self.memory)
+
+                    if objective_id:
+                        # Create tasks for this objective
+                        await self.memory.create_tasks(objective_id, tasks)
+
+                        logger.info(
+                            f"Created {len(tasks)} resumption tasks for {state.project_name}"
+                        )
+
+                        # Log activity
+                        await self.memory.log_activity(
+                            source="resumption",
+                            action="tasks_created",
+                            details={
+                                "project": state.project_name,
+                                "objective_id": objective_id,
+                                "task_count": len(tasks),
+                                "pending_work": state.get_pending_work()
+                            }
+                        )
+
+        except Exception as e:
+            logger.error(f"Error scanning for incomplete projects: {e}", exc_info=True)
 
     # =========================================================================
     # MAIN LOOPS
