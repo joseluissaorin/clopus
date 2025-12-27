@@ -14,7 +14,7 @@ import subprocess
 from pathlib import Path
 from datetime import datetime
 from typing import Dict, List, Optional, Any
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field, asdict, fields
 from enum import Enum
 import logging
 
@@ -136,8 +136,12 @@ class ProjectState:
 
     @classmethod
     def from_dict(cls, data: Dict) -> "ProjectState":
-        """Create from dictionary."""
-        return cls(**data)
+        """Create from dictionary, ignoring unknown fields."""
+        # Get valid field names from the dataclass
+        valid_fields = {f.name for f in fields(cls)}
+        # Filter out unknown fields
+        filtered_data = {k: v for k, v in data.items() if k in valid_fields}
+        return cls(**filtered_data)
 
     def update_activity(self) -> None:
         """Update last activity timestamp."""

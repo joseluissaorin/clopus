@@ -375,7 +375,8 @@ Project Path: {state.project_path}
 Continue from where we left off. Complete all pending work.
 """
 
-    objective_id = await memory_client.create_objective(content)
+    objective = await memory_client.create_objective(content)
+    objective_id = objective.id
     logger.info(f"Created resumption objective {objective_id} for {state.project_name}")
 
     return objective_id
