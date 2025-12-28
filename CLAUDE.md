@@ -1238,6 +1238,14 @@ Workspace is now isolated to `~/Dev/clopus-projects` to prevent future accidents
 - Task descriptions now include `Project Path:` for proper worker routing
 - Projects can be linked (e.g., nexus-web depends on nexus-api) with shared artifacts
 
+**2025-12-28**: AI-first planning was failing silently. Multiple bugs fixed:
+1. **Worker exit code handling** (`workers/worker-entrypoint.sh:346`): Using `||` with command substitution replaced valid Claude output with error codes. Fixed by adding `|| true` to prevent `set -e` from triggering, then handling errors based on output content.
+2. **JSON serialization** (`orchestrator/ai_planner.py:494`): Using Python's `str(dict)` produces single-quoted strings, not valid JSON. Fixed by using `json.dumps()`.
+3. **Directory permissions** (`workers/worker-entrypoint.sh:41-52`): The `/home/ubuntu/.claude/projects` directory was owned by root in Docker containers, preventing Claude from creating session files. Fixed by adding permission check/fix on startup.
+4. **Result collection race condition** (`orchestrator/worker_pool.py:860-872`): Verification result collector was picking up results from other tasks due to shared result file. Fixed by validating task_id before accepting results.
+5. **Missing worker acknowledgment** (`workers/worker-entrypoint.sh:291-293`): Workers never wrote `ack.json` that the orchestrator expected, causing 10s timeout and task dispatch failures. Fixed by adding immediate acknowledgment after reading pending.json.
+6. **Missing directory handling** (`workers/worker-entrypoint.sh:322-340`): Worker crashed with `cd: No such file or directory` when task had invalid cwd. Fixed by adding directory existence check with fallback to `/workspace`.
+
 ---
 
 ## MULTI-PROJECT SUPPORT

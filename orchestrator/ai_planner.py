@@ -198,7 +198,8 @@ Respond ONLY with the JSON output, no other text.
         self,
         objective: str,
         context: Optional[Dict] = None,
-        objective_key: Optional[str] = None
+        objective_key: Optional[str] = None,
+        objective_id: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Use Claude Code to analyze an objective and determine project structure.
@@ -207,6 +208,7 @@ Respond ONLY with the JSON output, no other text.
             objective: The objective text to analyze
             context: Optional additional context
             objective_key: Key for session continuity (defaults to hash of objective)
+            objective_id: ID for generating project name in fallback
 
         Returns:
             Dict with 'analysis', 'projects', 'clarifications_needed', 'risks'
@@ -239,12 +241,15 @@ Respond ONLY with the JSON output, no other text.
 
         if not result:
             logger.error("AI analysis failed, returning fallback structure")
-            return self._fallback_analysis(objective)
+            return self._fallback_analysis(objective, objective_id)
 
         # Parse the JSON response
         try:
+            logger.info(f"Raw AI result (first 500 chars): {str(result)[:500]}")
+            logger.info(f"Raw AI result type: {type(result)}")
             analysis = self._parse_json_response(result)
             logger.info(f"AI analysis complete: {len(analysis.get('projects', []))} projects identified")
+            logger.info(f"Analysis keys: {list(analysis.keys()) if isinstance(analysis, dict) else 'not a dict'}")
 
             # Cache the analysis
             cache_key = hash(objective)
@@ -253,7 +258,8 @@ Respond ONLY with the JSON output, no other text.
             return analysis
         except Exception as e:
             logger.error(f"Failed to parse AI analysis: {e}")
-            return self._fallback_analysis(objective)
+            logger.error(f"Raw result that failed to parse (first 300 chars): {str(result)[:300]}")
+            return self._fallback_analysis(objective, objective_id)
 
     async def generate_tasks(
         self,
@@ -351,7 +357,8 @@ Respond ONLY with the JSON output, no other text.
         # Step 1: Analyze the objective (starts the session)
         analysis = await self.analyze_objective(
             objective,
-            objective_key=objective_key
+            objective_key=objective_key,
+            objective_id=objective_id
         )
 
         # Check if clarifications are needed
@@ -466,6 +473,8 @@ Respond ONLY with the JSON output, no other text.
             )
 
             if result:
+                logger.debug(f"AI task result type: {type(result)}, keys: {result.keys() if isinstance(result, dict) else 'N/A'}")
+
                 # Cache the session ID for future continuity
                 session_id = result.get("_session_id") if isinstance(result, dict) else None
                 if session_id and objective_key:
@@ -475,14 +484,21 @@ Respond ONLY with the JSON output, no other text.
                 # Extract the actual result
                 if isinstance(result, dict):
                     if "result" in result:
+                        logger.debug(f"Returning result field (length: {len(str(result['result']))})")
                         return result["result"]
-                    elif "error" not in result:
+                    elif "error" in result:
+                        logger.warning(f"AI task returned error: {result.get('error')}, message: {result.get('message', 'N/A')}")
+                        return None
+                    else:
                         # Remove internal session tracking field
                         result.pop("_session_id", None)
-                        return str(result)
+                        # Return as JSON string, not Python str() which uses single quotes
+                        logger.debug(f"Returning full result dict as JSON string")
+                        return json.dumps(result)
                 else:
                     return str(result)
 
+            logger.warning("AI task returned None/empty result")
             return None
 
         except Exception as e:
@@ -567,9 +583,11 @@ Respond ONLY with the JSON output, no other text.
 
         return tasks
 
-    def _fallback_analysis(self, objective: str) -> Dict[str, Any]:
+    def _fallback_analysis(self, objective: str, objective_id: Optional[str] = None) -> Dict[str, Any]:
         """Fallback when AI analysis fails."""
         logger.warning("Using fallback analysis")
+        # Use same naming pattern as main.py for consistency
+        project_name = f"project-{objective_id[:8]}" if objective_id else "project"
         return {
             "analysis": {
                 "summary": objective[:200],
@@ -577,7 +595,7 @@ Respond ONLY with the JSON output, no other text.
                 "estimated_scope": "Standard project"
             },
             "projects": [{
-                "name": "project",
+                "name": project_name,
                 "description": objective,
                 "type": "custom",
                 "technologies": [],

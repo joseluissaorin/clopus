@@ -54,6 +54,10 @@ class WorkerPool:
         # AI-First Engine (set by orchestrator, NEW in v3.2)
         self.ai_engine: Optional["AIFirstEngine"] = None
 
+        # Verification results cache - stores results by task_id to prevent race conditions
+        # between collect_results() background loop and dispatch_verification_task()
+        self._verification_results: Dict[str, Dict] = {}
+
     def set_ai_engine(self, ai_engine: "AIFirstEngine") -> None:
         """Set the AI-first engine for intelligent task processing."""
         self.ai_engine = ai_engine
@@ -567,7 +571,13 @@ Always return results as JSON:
                         worker["last_session_id"] = session_id
                         logger.debug(f"Worker {worker_id} session: {session_id}")
 
-                    logger.info(f"Collected result from worker {worker_id}: {result_data.get('task_id')}")
+                    # Cache verification results for dispatch_verification_task to retrieve
+                    task_id = result_data.get("task_id")
+                    if task_id and task_id.startswith("verify-"):
+                        self._verification_results[task_id] = result_data
+                        logger.debug(f"Cached verification result: {task_id}")
+
+                    logger.info(f"Collected result from worker {worker_id}: {task_id}")
 
                 except FileNotFoundError:
                     # Another process already collected this result (race condition)
@@ -815,14 +825,52 @@ Always return results as JSON:
 
         logger.info(f"Dispatched verification task {verification_task_id} ({task_type})")
 
-        # Wait for result
+        # Wait for result - check both file and cache to handle race conditions
         result_file = worker["ipc_dir"] / "result.json"
         start_time = datetime.now()
 
         while (datetime.now() - start_time).total_seconds() < timeout_seconds:
+            # First check the cache (in case background collector already got it)
+            if verification_task_id in self._verification_results:
+                result_data = self._verification_results.pop(verification_task_id)
+                logger.debug(f"Retrieved verification result from cache: {verification_task_id}")
+
+                worker["status"] = "idle"
+                worker["current_task"] = None
+
+                # Capture session ID for future continuations
+                session_id = result_data.get("session_id")
+                if session_id:
+                    worker["last_session_id"] = session_id
+                    logger.debug(f"Verification worker session: {session_id}")
+
+                # Parse the actual output from Claude's response
+                output = result_data.get("result", result_data.get("output", ""))
+                parsed_result = self._parse_verification_result(output, task_type)
+
+                # Include session ID in result for AI planner session continuity
+                if parsed_result and isinstance(parsed_result, dict):
+                    parsed_result["_session_id"] = session_id
+                elif parsed_result:
+                    parsed_result = {"result": parsed_result, "_session_id": session_id}
+
+                return parsed_result
+
+            # Then check the file directly
             if result_file.exists():
                 try:
                     result_data = json.loads(result_file.read_text())
+
+                    # Verify this result is for our task
+                    result_task_id = result_data.get("task_id")
+                    if result_task_id != verification_task_id:
+                        # This is a result for a different task - cache it and keep waiting
+                        logger.debug(f"Found result for different task: {result_task_id}, waiting for {verification_task_id}")
+                        self._verification_results[result_task_id] = result_data
+                        result_file.unlink()
+                        await asyncio.sleep(0.5)
+                        continue
+
                     result_file.unlink()
 
                     worker["status"] = "idle"

@@ -38,6 +38,19 @@ CLAUDE_HOME="$HOME/.claude"
 mkdir -p "$CLAUDE_HOME"
 mkdir -p "$SESSION_DIR"
 
+# Ensure projects directory has correct permissions (may be created by root during volume mount)
+if [ -d "$CLAUDE_HOME/projects" ]; then
+    # Check if we own the directory, if not it might be from a volume mount
+    if [ ! -w "$CLAUDE_HOME/projects" ]; then
+        echo "[Worker $WORKER_ID] Fixing projects directory permissions..."
+        # If we can't write, try to create a new directory (will be owned by current user)
+        rm -rf "$CLAUDE_HOME/projects" 2>/dev/null || true
+        mkdir -p "$CLAUDE_HOME/projects"
+    fi
+else
+    mkdir -p "$CLAUDE_HOME/projects"
+fi
+
 # Set up worker-specific configuration from mounted config
 setup_claude_config() {
     local role=$1
@@ -274,6 +287,11 @@ while true; do
         # Read task
         TASK=$(cat "$PENDING_FILE")
         TASK_ID=$(echo "$TASK" | jq -r '.task_id')
+
+        # Write acknowledgment IMMEDIATELY so orchestrator knows we have the task
+        echo "{\"task_id\": \"$TASK_ID\", \"acknowledged_at\": \"$(date -Iseconds)\"}" > "$IPC_PATH/tasks/$WORKER_ID/ack.json"
+        echo "[Worker $WORKER_ID] Acknowledged task $TASK_ID"
+
         TASK_PROMPT=$(echo "$TASK" | jq -r '.prompt')
         TASK_CWD=$(echo "$TASK" | jq -r '.cwd // "/workspace"')
         TASK_SESSION_MODE=$(echo "$TASK" | jq -r '.session_mode // "auto"')
@@ -301,8 +319,25 @@ $(cat $SYSTEM_PROMPT_FILE)"
             fi
         fi
 
-        # Change to task directory
-        cd "$TASK_CWD"
+        # Change to task directory (with fallback if directory doesn't exist)
+        if [ -d "$TASK_CWD" ]; then
+            cd "$TASK_CWD"
+        elif [ "$TASK_CWD" = "/workspace" ]; then
+            cd /workspace
+        else
+            echo "[Worker $WORKER_ID] Warning: Directory $TASK_CWD does not exist, using /workspace"
+            # Try to create the directory if it looks like a project path
+            if [[ "$TASK_CWD" == /workspace/* ]]; then
+                mkdir -p "$TASK_CWD" 2>/dev/null || true
+                if [ -d "$TASK_CWD" ]; then
+                    cd "$TASK_CWD"
+                else
+                    cd /workspace
+                fi
+            else
+                cd /workspace
+            fi
+        fi
 
         # Start background heartbeat
         (
@@ -342,8 +377,18 @@ $TASK_PROMPT"
             fi
         fi
 
-        # Execute Claude Code
-        RAW_OUTPUT=$(claude "${CLAUDE_ARGS[@]}" "$FULL_PROMPT" 2>&1) || RAW_OUTPUT="{\"error\": \"$?\"}"
+        # Execute Claude Code - capture both output and exit code
+        # Use || true to prevent set -e from exiting on non-zero exit code
+        RAW_OUTPUT=$(claude "${CLAUDE_ARGS[@]}" "$FULL_PROMPT" 2>&1) || true
+        CLAUDE_EXIT_CODE=${PIPESTATUS[0]:-$?}
+
+        # Only replace with error if output is empty AND looks like an error occurred
+        if [ -z "$RAW_OUTPUT" ]; then
+            RAW_OUTPUT="{\"error\": \"no_output\", \"message\": \"Claude Code produced no output\"}"
+        elif echo "$RAW_OUTPUT" | grep -q '"error"'; then
+            # Output already contains error, pass through
+            echo "[Worker $WORKER_ID] Claude returned error in output"
+        fi
 
         # Parse output
         SESSION_ID=$(extract_session_id "$RAW_OUTPUT")

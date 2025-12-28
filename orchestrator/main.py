@@ -472,9 +472,10 @@ class Orchestrator:
 
                 if objective:
                     await self._process_objective(objective)
-                else:
-                    # Check for assignable tasks
-                    await self._assign_pending_tasks()
+
+                # Always try to assign pending tasks (not just when no objective)
+                # This ensures tasks get dispatched even when objectives are queued
+                await self._assign_pending_tasks()
 
                 # Small delay to prevent tight loop
                 await asyncio.sleep(0.5)
@@ -711,7 +712,7 @@ class Orchestrator:
                         logger.debug(f"Context injection failed: {e}")
 
                 # Dispatch to worker with correct cwd and context
-                await self.worker_pool.dispatch_task(
+                dispatched = await self.worker_pool.dispatch_task(
                     worker.id,
                     task.id,
                     task.title,
@@ -721,7 +722,21 @@ class Orchestrator:
                     memory_context=memory_context
                 )
 
-                logger.info(f"Assigned task '{task.title}' to worker {worker.id}")
+                if dispatched:
+                    logger.info(f"Assigned task '{task.title}' to worker {worker.id}")
+                else:
+                    # Dispatch failed (worker didn't acknowledge) - revert assignment
+                    # Reset task to pending so it can be reassigned
+                    await self.memory.short_term.update_task_status(
+                        task.id, "pending"
+                    )
+                    # Reset worker to idle in the pool
+                    if worker.id in self.worker_pool.workers:
+                        self.worker_pool.workers[worker.id]["status"] = "idle"
+                        self.worker_pool.workers[worker.id]["current_task"] = None
+                    logger.warning(
+                        f"Task '{task.title}' dispatch failed, reverted to pending for reassignment"
+                    )
 
     async def _objective_watcher(self) -> None:
         """Watch for new objectives from file system."""
