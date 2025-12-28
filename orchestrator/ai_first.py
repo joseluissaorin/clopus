@@ -1301,7 +1301,7 @@ RESPOND WITH JSON ONLY:
 
         try:
             # Use verificator worker for inference tasks
-            result = await self.worker_pool.dispatch_verificator_task(
+            result = await self.worker_pool.dispatch_verification_task(
                 task_type=inference_type,
                 task_data={"prompt": prompt},
                 timeout_seconds=timeout

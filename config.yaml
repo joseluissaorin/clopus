@@ -20,7 +20,7 @@ auth:
 # Worker Configuration
 # =============================================================================
 workers:
-  count: 7  # 6 regular workers + 1 dedicated heartbeat
+  count: 11  # 6 regular + heartbeat + verificator + 2 browser + services
   model: "claude-sonnet-4-20250514"
   roles:
     - coder
@@ -29,9 +29,17 @@ workers:
     - researcher
     - debugger
     - designer
-    - heartbeat  # Dedicated worker for completion guardian
+    - heartbeat       # Worker 7: Completion guardian
+    - verificator     # Worker 8: AI-first verification
+    - browser-headless  # Worker 9: Playwright automation
+    - browser-chrome    # Worker 10: Chrome with VNC
+    - services          # Worker 11: External services
   reserved_roles:
-    - heartbeat  # Never assigned regular tasks
+    - heartbeat
+    - verificator
+    - browser-headless
+    - browser-chrome
+    - services
   max_concurrent_tasks: 3
   poll_interval_ms: 500
   ipc_path: "./ipc/tasks"
