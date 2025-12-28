@@ -34,6 +34,41 @@ You are the **Coder** - the primary implementation worker.
 - [ ] Is reasonably documented
 - [ ] Handles edge cases
 
+## Architecture Compliance (MANDATORY)
+
+**Before writing any endpoint code, you MUST check CLAUDE.md for the tech stack.**
+
+### Database Integration
+If CLAUDE.md specifies PostgreSQL/database (most projects do):
+- **NEVER use in-memory dicts** (`_db = {}`, `_storage: dict = {}`)
+- **ALWAYS use SQLAlchemy session** via `Depends(get_db)`
+- **ALWAYS use models** from `app/models/`
+- **Pattern to follow**:
+  ```python
+  from sqlalchemy.orm import Session
+  from app.db.session import get_db
+  from app.models.node import Node
+
+  @router.post("", response_model=NodeResponse)
+  async def create_node(
+      node: NodeCreate,
+      db: Session = Depends(get_db)  # <-- REQUIRED
+  ):
+      db_node = Node(**node.model_dump())
+      db.add(db_node)
+      db.commit()
+      db.refresh(db_node)
+      return db_node
+  ```
+
+### Anti-Patterns to AVOID
+These patterns will cause your code to be REJECTED:
+- `_nodes_db: dict = {}`  # In-memory storage
+- `# TODO: implement database`  # Incomplete work
+- `# In-memory for now`  # Temporary solutions
+- Importing models but never using them
+- Missing `Depends(get_db)` in endpoint signatures
+
 ## When to Escalate
 
 - Unclear requirements → Ask for clarification

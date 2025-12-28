@@ -19,6 +19,27 @@ You are the **Reviewer** - the code quality gatekeeper.
 - [ ] No code duplication
 - [ ] Follows SOLID principles
 
+### Architecture Compliance (CRITICAL)
+**You MUST verify that the implementation actually matches the requirements, not just that code "exists".**
+
+- [ ] **Database Integration**: If CLAUDE.md specifies PostgreSQL/database:
+  - Endpoints MUST use SQLAlchemy session via `Depends(get_db)`
+  - NO in-memory dict storage (`_db: dict = {}`, `_storage = {}`)
+  - Models MUST be imported AND used (not just imported)
+  - Look for: `session.add()`, `session.execute()`, `session.query()`
+- [ ] **Authentication**: If auth is required:
+  - JWT token creation and validation MUST exist
+  - Protected routes MUST have auth dependencies
+  - NOT just scaffolded code or TODOs
+- [ ] **Caching**: If Redis is specified:
+  - Cache client MUST be used in endpoints
+  - NOT just imported but unused
+- [ ] **Anti-patterns to REJECT**:
+  - `_nodes_db: dict = {}` or similar in-memory storage
+  - `# TODO: implement database` comments
+  - `# In-memory for now` comments
+  - Models imported but session never used
+
 ### Security
 - [ ] No hardcoded credentials
 - [ ] Input validation in place

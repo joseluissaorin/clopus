@@ -34,6 +34,7 @@ from .project_state import ProjectState, ProjectStateManager, get_state_manager
 from .memory_client import MemoryClient
 from .shared_context import SharedContextManager, get_shared_context
 from .verificator_client import VerificatorClient, get_verificator_client
+from .architectural_verifier import ArchitecturalVerifier, get_architectural_verifier
 
 if TYPE_CHECKING:
     from .worker_pool import WorkerPool
@@ -132,6 +133,7 @@ class HeartbeatAgent:
         self._last_analysis: Dict[str, GapAnalysis] = {}
         self._pending_analyses: Dict[str, asyncio.Event] = {}
         self._verificator_client: Optional[VerificatorClient] = None
+        self._architectural_verifier: Optional[ArchitecturalVerifier] = None
 
     @property
     def verificator_client(self) -> Optional[VerificatorClient]:
@@ -139,6 +141,13 @@ class HeartbeatAgent:
         if self._verificator_client is None:
             self._verificator_client = get_verificator_client(self.worker_pool)
         return self._verificator_client
+
+    @property
+    def architectural_verifier(self) -> Optional[ArchitecturalVerifier]:
+        """Get the architectural verifier (lazily initialized from global)."""
+        if self._architectural_verifier is None:
+            self._architectural_verifier = get_architectural_verifier(self.worker_pool)
+        return self._architectural_verifier
 
     # =========================================================================
     # MAIN HEARTBEAT LOOP
@@ -302,6 +311,86 @@ class HeartbeatAgent:
         except Exception as e:
             logger.error(f"Error in retroactive artifact check: {e}")
 
+    async def _run_architectural_verification(self, objective, project_path: str) -> None:
+        """
+        Run architectural verification to detect semantic gaps.
+
+        This uses Claude Code intelligence to detect issues like:
+        - Database models exist but endpoints use in-memory storage
+        - Auth is specified but not implemented
+        - Redis caching is configured but not used
+
+        Unlike regex-based checks, this actually READS the code and
+        understands what it does.
+        """
+        if not self.architectural_verifier:
+            logger.debug("Architectural verifier not available")
+            return
+
+        try:
+            logger.info(f"Running architectural verification for: {project_path}")
+
+            # Run full architectural verification
+            gaps = await self.architectural_verifier.verify_project(project_path)
+
+            if not gaps:
+                logger.info("No architectural gaps detected")
+                return
+
+            logger.warning(f"Found {len(gaps)} architectural gaps")
+
+            # Log the gaps
+            for gap in gaps:
+                logger.warning(
+                    f"ARCHITECTURAL GAP [{gap.severity}]: {gap.requirement} "
+                    f"(actual: {gap.actual_state})"
+                )
+
+            # Log activity
+            await self.memory.log_activity(
+                source="heartbeat",
+                action="architectural_gaps_detected",
+                details={
+                    "objective_id": objective.id,
+                    "project_path": project_path,
+                    "gap_count": len(gaps),
+                    "critical_count": len([g for g in gaps if g.severity == "critical"]),
+                    "gaps": [
+                        {
+                            "requirement": g.requirement,
+                            "actual_state": g.actual_state,
+                            "severity": g.severity,
+                            "category": g.category
+                        }
+                        for g in gaps
+                    ]
+                }
+            )
+
+            # Generate remediation tasks for critical/high gaps
+            critical_high_gaps = [g for g in gaps if g.severity in ("critical", "high")]
+            if critical_high_gaps:
+                remediation_tasks = await self.architectural_verifier.generate_remediation_tasks(
+                    critical_high_gaps, project_path
+                )
+
+                if remediation_tasks:
+                    logger.info(f"Creating {len(remediation_tasks)} architectural remediation tasks")
+                    await self.memory.create_tasks(objective.id, remediation_tasks)
+
+                    await self.memory.log_activity(
+                        source="heartbeat",
+                        action="architectural_remediation_tasks_created",
+                        details={
+                            "objective_id": objective.id,
+                            "task_count": len(remediation_tasks),
+                            "task_titles": [t.get("title", "Unknown") for t in remediation_tasks]
+                        }
+                    )
+
+        except Exception as e:
+            logger.error(f"Error in architectural verification: {e}", exc_info=True)
+
     # =========================================================================
     # OBJECTIVE ANALYSIS (Claude-Powered)
     # =========================================================================
@@ -323,6 +412,15 @@ class HeartbeatAgent:
         # haven't been verified. Mark them as failed if artifacts are missing.
         # This catches tasks from before artifact verification was implemented.
         await self._retroactive_artifact_check(objective.id, project_path)
+
+        # =================================================================
+        # ARCHITECTURAL VERIFICATION (Claude-Powered)
+        # =================================================================
+        # Uses Claude Code intelligence to detect semantic gaps like:
+        # - Models exist but endpoints use in-memory storage
+        # - Auth is specified but not actually implemented
+        # - Caching is configured but never used
+        await self._run_architectural_verification(objective, project_path)
 
         # Load project state
         state = await self.state_manager.get_state(project_path)

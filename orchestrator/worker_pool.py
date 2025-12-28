@@ -878,6 +878,81 @@ Analyze:
 
 Respond with JSON:
 {{"matches": true/false, "coverage": 0.0-1.0, "gaps": [], "reasoning": "explanation"}}""",
+
+            "ARCHITECTURAL_ANALYSIS": f"""TASK TYPE: ARCHITECTURAL_ANALYSIS
+
+{task_data.get('instructions', 'Perform a full architectural analysis.')}
+
+PROJECT PATH: {task_data.get('project_path', '/workspace')}
+ANALYSIS TYPE: {task_data.get('analysis_type', 'full')}
+
+Your job is to READ THE ACTUAL CODE and verify implementation matches requirements:
+
+1. READ the CLAUDE.md file to understand project requirements
+2. READ the actual source files in app/api/, app/models/, etc.
+3. VERIFY code semantically does what it claims:
+   - Do endpoints actually USE the database models? Or do they use in-memory dicts?
+   - Is authentication actually implemented? Or just scaffolded?
+   - Is caching actually used? Or just imported but unused?
+4. Look for anti-patterns that indicate incomplete integration:
+   - `_db: dict = {{}}` or `_storage = {{}}` (in-memory storage)
+   - Missing `Depends(get_db)` in endpoint signatures
+   - Models imported but never instantiated
+   - Comments like "# TODO: implement" or "# In-memory for now"
+
+For each gap found, provide:
+- What the CLAUDE.md/requirements say
+- What the code ACTUALLY does
+- Specific files that need fixing
+- Exact steps to remediate
+
+Respond with JSON:
+{{
+  "gaps": [
+    {{
+      "requirement": "what was required",
+      "actual_state": "what the code actually does",
+      "severity": "critical|high|medium|low",
+      "category": "database|auth|cache|api|frontend",
+      "files_affected": ["app/api/v1/endpoints/nodes.py"],
+      "remediation_steps": ["Replace _nodes_db dict with SQLAlchemy session", "Add Depends(get_db) to endpoints"]
+    }}
+  ],
+  "overall_compliance": 0.0-1.0,
+  "reasoning": "explanation of analysis"
+}}""",
+
+            "PERSISTENCE_TEST": f"""TASK TYPE: PERSISTENCE_TEST
+
+{task_data.get('instructions', 'Test that data persists across service restarts.')}
+
+PROJECT PATH: {task_data.get('project_path', '/workspace')}
+API PORT: {task_data.get('api_port', 8000)}
+
+This is a RUNTIME TEST to verify data actually persists:
+
+1. Check if the API is running (or start it)
+2. Create a test record via the API (POST request)
+3. Note the record ID
+4. Stop/restart the API service
+5. Try to retrieve the record (GET request)
+6. If the record is NOT found:
+   - This PROVES in-memory storage is being used
+   - Data does NOT persist
+   - Database integration is REQUIRED
+
+Return your findings:
+{{
+  "persistence_passed": true/false,
+  "persistence_failed": true/false,
+  "test_details": {{
+    "record_created": true/false,
+    "record_id": "uuid...",
+    "record_found_after_restart": true/false
+  }},
+  "files_affected": ["app/api/v1/endpoints/nodes.py"],
+  "remediation_steps": ["Replace in-memory dict with SQLAlchemy session", "..."]
+}}""",
         }
 
         return prompts.get(task_type, prompts["SEMANTIC_CHECK"])
