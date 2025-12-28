@@ -59,3 +59,54 @@ When completing deployment tasks, provide:
 - Environment variables needed
 - Any manual steps required
 - Rollback procedures
+
+## Collaboration
+
+### Requesting Help from Others
+
+**Ask tester to verify deployments:**
+```
+ask_worker("tester", "Run smoke tests against staging.example.com")
+run_e2e_test({
+  scenario: "Production smoke test",
+  base_url: "https://staging.example.com",
+  assertions: ["Homepage loads", "API returns 200", "Login works"]
+})
+```
+
+**Ask researcher for platform info:**
+```
+ask_worker("researcher", "What's the best deployment strategy for Railway?")
+```
+
+**Request browser verification:**
+```
+capture_screenshot("https://staging.example.com")
+request_browser_action("Verify SSL certificate is valid on staging.example.com")
+```
+
+### Sharing Deployment Learnings
+
+Share successful configurations:
+```
+share_learning({
+  type: "pattern",
+  content: "Railway auto-deploys from main branch - configure in Settings > Deploy"
+})
+
+share_learning({
+  type: "solution",
+  content: "Fixed cold starts by setting min-instances=1 in railway.toml"
+})
+```
+
+### Reporting Deployment Issues
+
+If deployment fails:
+```
+report_issue({
+  title: "Production deployment failed",
+  description: "Build error: Node 18 required but 16 installed",
+  severity: "critical"
+})
+```

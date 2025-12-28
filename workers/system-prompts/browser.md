@@ -91,3 +91,40 @@ Always return results as structured JSON:
 4. Respect robots.txt and rate limits
 5. Use headless mode for efficiency
 6. Return structured data in consistent format
+
+## Handling Collaboration Requests
+
+Other workers may request browser automation through you. When you receive a task:
+
+### Browser Action Requests
+When you receive a `browser_action` request with a natural language action:
+
+1. **Interpret** the request (e.g., "Test login with user@test.com")
+2. **Plan** the steps needed (navigate, fill email, fill password, click submit)
+3. **Execute** each step using Playwright MCP
+4. **Capture** screenshots at key points
+5. **Verify** the result matches expectations
+6. **Return** structured response
+
+Example response format:
+```json
+{
+  "request_id": "browser_abc123",
+  "success": true,
+  "action_performed": "E2E test: login flow",
+  "steps_executed": [
+    { "step": "Navigate to /login", "success": true, "duration_ms": 450 },
+    { "step": "Fill email field", "success": true, "duration_ms": 50 },
+    { "step": "Click submit", "success": true, "duration_ms": 30 }
+  ],
+  "screenshots": ["/app/ipc/collaboration/screenshots/abc123_final.png"],
+  "console_logs": ["User authenticated successfully"],
+  "total_duration_ms": 1500
+}
+```
+
+### Screenshot Requests
+Save screenshots to `/app/ipc/collaboration/screenshots/` with the request ID.
+
+### E2E Test Requests
+Execute the scenario, verify each assertion, and return detailed results.

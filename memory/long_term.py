@@ -524,6 +524,54 @@ class LongTermMemory:
         """Find similar past decisions."""
         return await self.search(decision_context, MemoryType.DECISION, n_results)
 
+    async def search_for_role(
+        self,
+        query: str,
+        role: str,
+        memory_type: Optional[MemoryType] = None,
+        n_results: int = 5
+    ) -> List[Memory]:
+        """
+        Search memories filtered by worker role.
+
+        This is useful for finding context relevant to specific worker types.
+        For example, a coder worker might want to find patterns from previous
+        coding tasks, while a designer might want to find design-related learnings.
+
+        Args:
+            query: Search query
+            role: Worker role to filter by (e.g., 'coder', 'designer', 'tester')
+            memory_type: Optional memory type filter
+            n_results: Maximum number of results
+
+        Returns:
+            List of relevant memories from the specified role
+        """
+        where = {"from_role": role}
+        return await self.search(query, memory_type, n_results, where)
+
+    async def search_by_project(
+        self,
+        query: str,
+        project_name: str,
+        memory_type: Optional[MemoryType] = None,
+        n_results: int = 5
+    ) -> List[Memory]:
+        """
+        Search memories filtered by project.
+
+        Args:
+            query: Search query
+            project_name: Project name to filter by
+            memory_type: Optional memory type filter
+            n_results: Maximum number of results
+
+        Returns:
+            List of relevant memories from the specified project
+        """
+        where = {"project": project_name}
+        return await self.search(query, memory_type, n_results, where)
+
     # =========================================================================
     # MEMORY MANAGEMENT
     # =========================================================================

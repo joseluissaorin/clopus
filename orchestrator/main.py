@@ -37,6 +37,9 @@ from .project_resumption import get_resumption_generator, create_resumption_obje
 from .shared_context import get_shared_context, SharedContextManager
 from .heartbeat_agent import HeartbeatAgent, get_heartbeat_agent, set_heartbeat_worker_pool
 from .verificator_client import VerificatorClient, get_verificator_client, set_verificator_client
+from .collaboration import CollaborationManager
+from .message_router import MessageRouter
+from .context_injector import ContextInjector
 from validation.pipeline import ValidationPipeline
 
 # Configure logging
@@ -79,6 +82,11 @@ class Orchestrator:
 
         # Verificator client (intelligent verification using Worker 8)
         self.verificator_client: Optional[VerificatorClient] = None
+
+        # Inter-worker collaboration components
+        self.collaboration_manager: Optional[CollaborationManager] = None
+        self.message_router: Optional[MessageRouter] = None
+        self.context_injector: Optional[ContextInjector] = None
 
     async def initialize(self) -> None:
         """Initialize all components."""
@@ -125,6 +133,23 @@ class Orchestrator:
         self.verificator_client = VerificatorClient(self.worker_pool)
         set_verificator_client(self.verificator_client)
         logger.info("Verificator client initialized (Worker 8)")
+
+        # Initialize inter-worker collaboration components
+        self.message_router = MessageRouter(
+            self.worker_pool,
+            self.settings.ipc_path
+        )
+        self.collaboration_manager = CollaborationManager(
+            self.worker_pool,
+            self.memory,
+            self.settings.ipc_path
+        )
+        await self.collaboration_manager.initialize()
+        self.context_injector = ContextInjector(
+            self.memory,
+            self.settings.ipc_path
+        )
+        logger.info("Inter-worker collaboration initialized")
 
         # Initialize status reporter
         self.status_reporter = StatusReporter(
@@ -266,6 +291,7 @@ class Orchestrator:
             asyncio.create_task(self._worker_monitor()),
             asyncio.create_task(self._status_loop()),
             asyncio.create_task(self._heartbeat_loop()),  # Completion guardian
+            asyncio.create_task(self._collaboration_loop()),  # Inter-worker communication
         ]
 
         # Wait for shutdown
@@ -288,6 +314,9 @@ class Orchestrator:
                 action="shutdown"
             )
             await self.memory.close()
+
+        if self.collaboration_manager:
+            await self.collaboration_manager.shutdown()
 
         if self.worker_pool:
             await self.worker_pool.shutdown()
@@ -893,6 +922,34 @@ class Orchestrator:
             except Exception as e:
                 logger.error(f"Error in heartbeat loop: {e}", exc_info=True)
                 await asyncio.sleep(60)  # Wait a minute before retrying
+
+    async def _collaboration_loop(self) -> None:
+        """
+        Inter-worker collaboration loop.
+
+        Monitors the collaboration IPC directory and:
+        1. Routes help requests to appropriate workers
+        2. Processes async events (spawn_subtask, share_learning, etc.)
+        3. Delivers responses back to requesting workers
+        """
+        logger.info("Collaboration loop started (Inter-worker communication)")
+
+        # Wait for other systems to initialize
+        await asyncio.sleep(5)
+
+        while self.running:
+            try:
+                if self.collaboration_manager:
+                    await self.collaboration_manager.process_collaboration()
+
+                # Poll every 500ms for responsive inter-worker communication
+                await asyncio.sleep(0.5)
+
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Error in collaboration loop: {e}", exc_info=True)
+                await asyncio.sleep(2)  # Brief pause before retrying
 
     # =========================================================================
     # PROJECT PATH DETECTION

@@ -142,3 +142,38 @@ Example: "Send email with scraped content"
 2. Format content for email
 3. Send email with Gmail
 4. Return combined result
+
+## Collaboration
+
+### Responding to Service Requests
+
+Other workers may request services through you:
+
+```
+ask_worker("services", "Send welcome email to user@example.com")
+```
+
+### Sharing API Discoveries
+
+When you discover API patterns, share them:
+```
+share_learning({
+  type: "api_endpoint",
+  content: "Gmail rate limit: 250 quota units per second per user"
+})
+```
+
+### Requesting Data from Other Workers
+
+Ask for help when needed:
+```
+ask_worker("researcher", "What's the best email subject line for cold outreach?")
+ask_worker("coder", "Generate HTML email template for welcome message")
+```
+
+### Browser Automation for OAuth
+
+For OAuth flows or web-based service setup:
+```
+request_browser_action("Complete Gmail OAuth flow and capture credentials")
+```

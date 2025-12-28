@@ -37,6 +37,7 @@ Give it an objective like *"Build a todo app with React and FastAPI"* and watch 
 - [Multi-Project Support](#multi-project-support)
 - [Heartbeat Agent](#heartbeat-agent)
 - [Verificator Worker](#verificator-worker)
+- [Inter-Worker Collaboration](#inter-worker-collaboration)
 - [Validation Pipeline](#validation-pipeline)
 - [Memory System](#memory-system)
 - [Self-Generating Ecosystem](#self-generating-ecosystem)
@@ -81,12 +82,14 @@ Traditional AI coding assistants require constant human guidance. CLOPUS takes a
 ### Multi-Agent Architecture
 - **11 Parallel Workers**: 6 core roles (Coder, Tester, Reviewer, Researcher, Debugger, Designer) + 5 reserved workers
 - **Reserved Workers**: Heartbeat, Verificator, Browser-Headless, Browser-Chrome, Services
+- **Inter-Worker Collaboration**: Workers can communicate, ask each other for help, and share knowledge
 - **Intelligent Task Distribution**: Orchestrator assigns tasks based on worker specialization and workload
 - **File-Based IPC**: Simple, debuggable communication via JSON files with acknowledgment handshake
 - **Designer Agent**: Creates comprehensive branding and design systems before implementation
 - **Verificator Worker**: Uses Claude's intelligence to verify task completions and detect semantic duplicates
 - **Browser Workers**: Playwright (headless) and Chrome+VNC (visual) for web automation
 - **Services Worker**: Email, calendar, and external API integrations via MCP
+- **Context Injection**: Pre-task memory search injects relevant patterns and solutions
 
 ### Project Continuity
 - **Automatic Resumption**: Incomplete projects are automatically resumed on restart
@@ -399,6 +402,10 @@ Workers communicate via file-based IPC:
 - `ipc/tasks/{worker_id}/pending.json` - Tasks for worker
 - `ipc/tasks/{worker_id}/status.json` - Worker status
 - `ipc/tasks/{worker_id}/result.json` - Task results
+- `ipc/collaboration/requests/` - Inter-worker help requests
+- `ipc/collaboration/responses/` - Help request responses
+
+All workers can use the **Collaboration MCP** to ask other workers for help, request browser automation, and share learnings.
 
 ## Designer Agent
 
@@ -662,6 +669,249 @@ The Verificator gracefully handles existing tasks:
 - Database migrations automatically add new columns to existing databases
 - Existing completed tasks are retroactively audited during heartbeat cycles
 
+## Inter-Worker Collaboration
+
+CLOPUS v3.1 introduces a comprehensive inter-worker collaboration system that enables workers to communicate with each other, request browser automation, and share knowledge through long-term memory.
+
+### Architecture Overview
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                           COLLABORATION SYSTEM                                   │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                  │
+│  ┌──────────────┐     ┌──────────────────┐     ┌──────────────┐                │
+│  │   Worker 1   │────▶│  Collaboration   │────▶│   Worker 6   │                │
+│  │   (Coder)    │◀────│   MCP Server     │◀────│  (Designer)  │                │
+│  └──────────────┘     └──────────────────┘     └──────────────┘                │
+│         │                      │                      │                         │
+│         │              ┌───────┴───────┐              │                         │
+│         │              ▼               ▼              │                         │
+│         │      /collaboration/  /collaboration/       │                         │
+│         │        requests/        responses/          │                         │
+│         │              │               │              │                         │
+│         │              └───────┬───────┘              │                         │
+│         │                      ▼                      │                         │
+│         │         ┌──────────────────────┐            │                         │
+│         │         │    Orchestrator      │            │                         │
+│         │         │ CollaborationManager │            │                         │
+│         │         │   MessageRouter      │            │                         │
+│         │         └──────────────────────┘            │                         │
+│         │                      │                      │                         │
+│         └──────────────────────┼──────────────────────┘                         │
+│                                ▼                                                 │
+│                    ┌──────────────────────┐                                     │
+│                    │  Long-Term Memory    │                                     │
+│                    │    (ChromaDB)        │                                     │
+│                    │  Context Injection   │                                     │
+│                    └──────────────────────┘                                     │
+│                                                                                  │
+└─────────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Collaboration MCP Server
+
+Workers have access to a dedicated `collaboration` MCP server that provides 9 tools for inter-worker communication:
+
+| Tool | Description | Sync |
+|------|-------------|------|
+| `ask_worker` | Ask another worker for help and wait for response | Yes |
+| `spawn_subtask` | Create a task for another worker | Optional |
+| `request_browser_action` | Request ANY browser automation (natural language) | Yes |
+| `run_e2e_test` | Run E2E test scenario with assertions | Yes |
+| `capture_screenshot` | Capture screenshot of page/element | Yes |
+| `share_learning` | Share discovery with other workers via memory | No |
+| `find_relevant_context` | Search memory for relevant context | Yes |
+| `get_design_system` | Get project's design system | Yes |
+| `report_issue` | Report bug for debugger to investigate | No |
+
+### Communication Flow
+
+When a worker needs help from another worker:
+
+```
+1. Worker (Coder) calls ask_worker("designer", "What color for buttons?")
+       │
+       ▼
+2. Collaboration MCP writes request to /ipc/collaboration/requests/req_123.json
+       │
+       ▼
+3. Orchestrator detects new request (500ms polling)
+       │
+       ▼
+4. MessageRouter creates high-priority task for Designer worker
+       │
+       ▼
+5. Designer receives task, completes it, returns response
+       │
+       ▼
+6. Orchestrator writes response to /ipc/collaboration/responses/req_123.json
+       │
+       ▼
+7. Collaboration MCP detects response, returns to waiting Coder
+```
+
+### Worker-to-Worker Examples
+
+**Coder asking Designer for color guidance:**
+```javascript
+ask_worker("designer", "What primary color should I use for action buttons?")
+// Response: "Use #3B82F6 (blue-500) for primary actions, matching the design system"
+```
+
+**Tester requesting E2E browser automation:**
+```javascript
+run_e2e_test({
+  scenario: "User registration and login flow",
+  base_url: "http://localhost:3142",
+  assertions: [
+    "Registration success message appears",
+    "User is redirected to dashboard",
+    "Username is displayed in header"
+  ]
+})
+// Browser worker executes full flow, returns screenshots and results
+```
+
+**Reviewer reporting bugs to Debugger:**
+```javascript
+report_issue({
+  title: "Null pointer in UserService",
+  description: "getUserById doesn't check for null before accessing properties",
+  file_path: "src/services/UserService.ts",
+  severity: "high"
+})
+```
+
+**Researcher sharing API discoveries:**
+```javascript
+share_learning({
+  type: "api_endpoint",
+  content: "Stripe webhooks require signature verification using stripe.webhooks.constructEvent()"
+})
+```
+
+### Browser Automation
+
+Workers can request full browser automation from browser workers (9-10):
+
+```javascript
+// Natural language browser automation
+request_browser_action("Test the checkout flow with an invalid credit card")
+
+// Structured E2E test
+run_e2e_test({
+  scenario: "Checkout flow validation",
+  steps: [
+    "Navigate to /cart",
+    "Click checkout button",
+    "Fill invalid card number",
+    "Verify error message appears"
+  ],
+  assertions: ["Error message shows 'Invalid card number'"]
+})
+
+// Screenshot capture
+capture_screenshot("http://localhost:3142/dashboard")
+```
+
+Browser workers are full Claude Code instances that translate natural language requests into Playwright MCP actions.
+
+### Memory Integration
+
+#### Pre-Task Context Injection
+
+Before dispatching any task, the orchestrator's `ContextInjector`:
+1. Searches long-term memory for relevant patterns/solutions
+2. Gets shared context from other workers
+3. Loads design system if applicable
+4. Injects context into task prompt
+
+#### Post-Task Learning Extraction
+
+After task completion:
+1. Extracts patterns from task output
+2. Stores learnings in long-term memory with role tags
+3. Updates shared cache for quick access
+
+#### Role-Filtered Queries
+
+Workers can search memory filtered by role:
+```python
+# Search for patterns discovered by designers
+results = await memory.search_for_role(
+    query="button styling",
+    role="designer",
+    limit=5
+)
+```
+
+### IPC Structure
+
+```
+/app/ipc/
+├── tasks/{worker_id}/          # Existing task dispatch
+│   ├── pending.json
+│   ├── result.json
+│   ├── status.json
+│   └── ack.json
+│
+├── collaboration/              # Inter-worker communication
+│   ├── requests/               # Help requests awaiting response
+│   │   └── {request_id}.json
+│   ├── responses/              # Completed responses
+│   │   └── {request_id}.json
+│   ├── events/                 # Async events (spawn_subtask, etc.)
+│   │   └── {event_id}.json
+│   └── screenshots/            # Screenshot results
+│       └── {request_id}.png
+│
+└── memory/                     # Shared memory cache
+    └── shared/
+        ├── design_system.json
+        ├── api_endpoints.json
+        └── recent_learnings.json
+```
+
+### Request/Response Protocol
+
+**Request Format:**
+```json
+{
+  "id": "req_abc123",
+  "type": "help_request",
+  "from_worker_id": "1",
+  "from_role": "coder",
+  "to_role": "designer",
+  "question": "What color should the primary button be?",
+  "context": {
+    "project": "/workspace/todo-app",
+    "file": "src/components/Button.tsx"
+  },
+  "timeout_seconds": 60,
+  "created_at": "2024-12-28T10:00:00Z"
+}
+```
+
+**Response Format:**
+```json
+{
+  "request_id": "req_abc123",
+  "success": true,
+  "response": "Use the primary color from the design system: #3B82F6 (blue-500).",
+  "from_role": "designer",
+  "from_worker_id": "6",
+  "completed_at": "2024-12-28T10:00:45Z"
+}
+```
+
+### Graceful Degradation
+
+- **Timeout Handling**: Requests timeout after configurable period (default 60s)
+- **No Deadlocks**: Workers continue after timeout with error response
+- **Fallback Behavior**: System works without collaboration (workers just don't get help)
+- **Retryable Responses**: Timeout responses indicate retryability
+
 ## Validation Pipeline
 
 All generated code must pass 8 validation stages:
@@ -782,6 +1032,7 @@ After completing a project:
 
 | Server | Description | Key Tools |
 |--------|-------------|-----------|
+| **collaboration** | Inter-worker communication | ask_worker, spawn_subtask, request_browser_action, run_e2e_test, share_learning |
 | **browser** | Playwright automation | navigate, screenshot, click, fill, evaluate |
 | **playwright** | Headless browser via Playwright MCP | navigate, click, fill, screenshot, evaluate |
 | **gmail** | Gmail API with OAuth | read_email, send_email, list_messages, search |
@@ -1093,6 +1344,9 @@ docker-compose build
 - [x] Browser Workers *(implemented)* - Playwright headless + Chrome with VNC
 - [x] Services Worker *(implemented)* - Gmail, Firecrawl, Calendar integrations
 - [x] Reliability Improvements *(implemented)* - Circular deps, graceful degradation, atomic IPC
+- [x] Inter-Worker Collaboration *(implemented)* - Workers can communicate, request browser automation, share knowledge
+- [x] Context Injection *(implemented)* - Pre-task memory search for relevant patterns and solutions
+- [x] Collaboration MCP Server *(implemented)* - 9 tools for ask_worker, spawn_subtask, browser automation
 - [ ] Cost tracking and budgets
 - [ ] Custom worker roles
 

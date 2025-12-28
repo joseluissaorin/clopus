@@ -120,6 +120,18 @@ echo "[Worker $WORKER_ID] Claude Code skills configured: $SKILL_COUNT skills for
 # Create IPC directories for this worker
 mkdir -p "$IPC_PATH/tasks/$WORKER_ID"
 
+# =============================================================================
+# Create Collaboration IPC Directories
+# =============================================================================
+# These directories enable inter-worker communication
+mkdir -p "$IPC_PATH/collaboration/requests"
+mkdir -p "$IPC_PATH/collaboration/responses"
+mkdir -p "$IPC_PATH/collaboration/events"
+mkdir -p "$IPC_PATH/collaboration/screenshots"
+mkdir -p "$IPC_PATH/memory/shared"
+
+echo "[Worker $WORKER_ID] Collaboration IPC directories ready"
+
 # Initialize status
 STARTED_AT=$(date -Iseconds)
 echo '{"status": "idle", "role": "'$WORKER_ROLE'", "started_at": "'$STARTED_AT'", "updated_at": "'$STARTED_AT'"}' > "$IPC_PATH/tasks/$WORKER_ID/status.json"

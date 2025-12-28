@@ -1,5 +1,15 @@
 {
   "mcpServers": {
+    "collaboration": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["/app/mcp-servers/core/collaboration/dist/index.js"],
+      "env": {
+        "IPC_PATH": "${IPC_PATH:-/app/ipc}",
+        "WORKER_ID": "${WORKER_ID:-0}",
+        "WORKER_ROLE": "${WORKER_ROLE:-unknown}"
+      }
+    },
     "browser": {
       "type": "stdio",
       "command": "node",
