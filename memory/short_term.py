@@ -178,6 +178,99 @@ class ShortTermMemory:
             self._connection = None
 
     # =========================================================================
+    # AUTONOMY & SELF-HEALING
+    # =========================================================================
+
+    async def reset_assigned_tasks_to_pending(self) -> int:
+        """Reset all 'assigned' tasks back to 'pending'.
+
+        Called on orchestrator startup to recover from stale state where
+        tasks are marked assigned but workers aren't actually working on them.
+
+        Returns:
+            Number of tasks reset
+        """
+        async with self._lock:
+            conn = await self._get_connection()
+            cursor = await conn.execute(
+                """UPDATE tasks SET status = ?, worker_id = NULL, assigned_at = NULL
+                   WHERE status = ?""",
+                (TaskStatus.PENDING.value, TaskStatus.ASSIGNED.value)
+            )
+            count = cursor.rowcount
+            await conn.commit()
+            return count
+
+    async def deduplicate_objectives(self) -> int:
+        """Find and mark duplicate pending objectives.
+
+        Compares objective content to find near-duplicates and marks
+        newer duplicates as 'failed' with a note.
+
+        Returns:
+            Number of duplicates marked
+        """
+        async with self._lock:
+            conn = await self._get_connection()
+
+            # Get all pending objectives
+            cursor = await conn.execute(
+                """SELECT id, content FROM objectives
+                   WHERE status = ? ORDER BY created_at ASC""",
+                (ObjectiveStatus.PENDING.value,)
+            )
+            objectives = await cursor.fetchall()
+
+            seen_content = {}
+            duplicates = []
+
+            for obj_id, content in objectives:
+                # Normalize content for comparison
+                normalized = content.lower().strip()[:200]  # First 200 chars
+
+                if normalized in seen_content:
+                    duplicates.append(obj_id)
+                else:
+                    seen_content[normalized] = obj_id
+
+            # Mark duplicates as failed
+            for dup_id in duplicates:
+                await conn.execute(
+                    """UPDATE objectives SET status = ?,
+                       metadata = json_set(COALESCE(metadata, '{}'), '$.duplicate_of', 'earlier_objective')
+                       WHERE id = ?""",
+                    (ObjectiveStatus.FAILED.value, dup_id)
+                )
+
+            await conn.commit()
+            return len(duplicates)
+
+    async def cleanup_stale_tasks(self, stale_threshold_minutes: int = 30) -> int:
+        """Reset tasks that have been assigned too long without completing.
+
+        This is a self-healing mechanism to recover from stuck tasks.
+
+        Args:
+            stale_threshold_minutes: Minutes after which an assigned task is considered stale
+
+        Returns:
+            Number of stale tasks reset
+        """
+        async with self._lock:
+            conn = await self._get_connection()
+            cursor = await conn.execute(
+                """UPDATE tasks SET status = ?, worker_id = NULL, assigned_at = NULL
+                   WHERE status = ?
+                   AND assigned_at IS NOT NULL
+                   AND datetime(assigned_at) < datetime('now', ?)""",
+                (TaskStatus.PENDING.value, TaskStatus.ASSIGNED.value,
+                 f'-{stale_threshold_minutes} minutes')
+            )
+            count = cursor.rowcount
+            await conn.commit()
+            return count
+
+    # =========================================================================
     # OBJECTIVES
     # =========================================================================
 

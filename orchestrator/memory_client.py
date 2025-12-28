@@ -57,6 +57,50 @@ class MemoryClient:
         """Close connections."""
         await self.short_term.close()
 
+    async def reset_stale_assigned_tasks(self) -> int:
+        """Reset all 'assigned' tasks to 'pending' on orchestrator restart.
+
+        This handles the case where the orchestrator restarts but workers
+        aren't actually working on the tasks that were marked as assigned.
+
+        Returns:
+            Number of tasks reset
+        """
+        count = await self.short_term.reset_assigned_tasks_to_pending()
+        if count > 0:
+            logger.info(f"Reset {count} stale assigned tasks to pending")
+        return count
+
+    async def deduplicate_pending_objectives(self) -> int:
+        """Mark duplicate pending objectives as skipped.
+
+        Uses content similarity to detect duplicates.
+
+        Returns:
+            Number of duplicates found and skipped
+        """
+        count = await self.short_term.deduplicate_objectives()
+        if count > 0:
+            logger.info(f"Deduplicated {count} duplicate objectives")
+        return count
+
+    async def cleanup_stale_tasks(self, stale_threshold_minutes: int = 30) -> int:
+        """Reset tasks that have been assigned too long without completing.
+
+        This is a self-healing mechanism called periodically to recover
+        from stuck tasks.
+
+        Args:
+            stale_threshold_minutes: Minutes after which an assigned task is stale
+
+        Returns:
+            Number of stale tasks reset
+        """
+        count = await self.short_term.cleanup_stale_tasks(stale_threshold_minutes)
+        if count > 0:
+            logger.info(f"Self-healed {count} stale tasks (assigned > {stale_threshold_minutes}m)")
+        return count
+
     # =========================================================================
     # OBJECTIVE OPERATIONS
     # =========================================================================

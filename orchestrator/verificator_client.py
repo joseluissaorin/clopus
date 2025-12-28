@@ -11,9 +11,12 @@ NEW IN v3.2: AI-First Integration
 - AI understands context, intent, and semantics - regex doesn't
 """
 
+import hashlib
 import logging
+import time
 from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
 from pathlib import Path
+from dataclasses import dataclass, field
 
 if TYPE_CHECKING:
     from .ai_first import AIFirstEngine
@@ -21,21 +24,131 @@ if TYPE_CHECKING:
 logger = logging.getLogger("clopus.verificator_client")
 
 
+@dataclass
+class CacheEntry:
+    """A cached verification result with TTL."""
+    value: Any
+    created_at: float = field(default_factory=time.time)
+    ttl_seconds: float = 300  # 5 minutes default
+
+    def is_valid(self) -> bool:
+        """Check if cache entry is still valid."""
+        return (time.time() - self.created_at) < self.ttl_seconds
+
+
+class VerificatorCache:
+    """
+    LRU-style cache for verificator results with TTL.
+
+    Reduces repeated calls to the verificator worker for:
+    - Artifact specification (same task title → same artifacts)
+    - Duplicate detection (same task pair → same result)
+    - Completion verification (artifacts don't change often)
+    """
+
+    def __init__(self, max_size: int = 500, default_ttl: float = 300):
+        self.max_size = max_size
+        self.default_ttl = default_ttl
+        self._cache: Dict[str, CacheEntry] = {}
+        self._access_order: List[str] = []  # For LRU eviction
+        self._hits = 0
+        self._misses = 0
+
+    def _make_key(self, prefix: str, *args) -> str:
+        """Create a cache key from prefix and arguments."""
+        content = "|".join(str(a) for a in args)
+        hash_val = hashlib.md5(content.encode()).hexdigest()[:16]
+        return f"{prefix}:{hash_val}"
+
+    def get(self, key: str) -> Optional[Any]:
+        """Get a value from cache if valid."""
+        entry = self._cache.get(key)
+        if entry is None:
+            self._misses += 1
+            return None
+
+        if not entry.is_valid():
+            # Expired, remove it
+            self._remove(key)
+            self._misses += 1
+            return None
+
+        # Update access order for LRU
+        if key in self._access_order:
+            self._access_order.remove(key)
+        self._access_order.append(key)
+
+        self._hits += 1
+        return entry.value
+
+    def set(self, key: str, value: Any, ttl: Optional[float] = None) -> None:
+        """Store a value in cache with optional TTL."""
+        # Evict if at capacity
+        while len(self._cache) >= self.max_size and self._access_order:
+            oldest_key = self._access_order.pop(0)
+            self._cache.pop(oldest_key, None)
+
+        self._cache[key] = CacheEntry(
+            value=value,
+            ttl_seconds=ttl or self.default_ttl
+        )
+        self._access_order.append(key)
+
+    def _remove(self, key: str) -> None:
+        """Remove an entry from cache."""
+        self._cache.pop(key, None)
+        if key in self._access_order:
+            self._access_order.remove(key)
+
+    def invalidate_prefix(self, prefix: str) -> int:
+        """Invalidate all entries with a given prefix."""
+        keys_to_remove = [k for k in self._cache if k.startswith(prefix)]
+        for key in keys_to_remove:
+            self._remove(key)
+        return len(keys_to_remove)
+
+    def clear(self) -> None:
+        """Clear all cache entries."""
+        self._cache.clear()
+        self._access_order.clear()
+
+    @property
+    def stats(self) -> Dict[str, Any]:
+        """Get cache statistics."""
+        total = self._hits + self._misses
+        hit_rate = self._hits / total if total > 0 else 0
+        return {
+            "size": len(self._cache),
+            "max_size": self.max_size,
+            "hits": self._hits,
+            "misses": self._misses,
+            "hit_rate": f"{hit_rate:.1%}"
+        }
+
+
 class VerificatorClient:
     """Client for intelligent verification operations using the Verificator worker."""
 
-    def __init__(self, worker_pool):
+    def __init__(self, worker_pool, cache_enabled: bool = True):
         """
         Initialize the verificator client.
 
         Args:
             worker_pool: The WorkerPool instance to dispatch verification tasks
+            cache_enabled: Whether to enable result caching (default: True)
         """
         self.worker_pool = worker_pool
         self._fallback_to_regex = True  # Use regex if verificator unavailable
 
         # AI-First Engine (NEW in v3.2)
         self.ai_engine: Optional["AIFirstEngine"] = None
+
+        # Caching layer (NEW in v3.2)
+        self.cache_enabled = cache_enabled
+        self._cache = VerificatorCache(
+            max_size=500,
+            default_ttl=300  # 5 minutes
+        ) if cache_enabled else None
 
     def set_ai_engine(self, ai_engine: "AIFirstEngine") -> None:
         """
@@ -64,9 +177,20 @@ class VerificatorClient:
         Returns:
             List of expected artifact paths
         """
+        # Check cache first
+        if self._cache:
+            cache_key = self._cache._make_key("artifacts", task_title, project_path)
+            cached = self._cache.get(cache_key)
+            if cached is not None:
+                logger.debug(f"Cache hit for artifact specification: {task_title}")
+                return cached
+
         if not self.worker_pool.is_verificator_available():
             logger.debug("Verificator not available, using regex fallback")
-            return self._fallback_infer_artifacts(task_title, task_description)
+            artifacts = self._fallback_infer_artifacts(task_title, task_description)
+            if self._cache:
+                self._cache.set(cache_key, artifacts, ttl=600)  # 10 min for fallback
+            return artifacts
 
         result = await self.worker_pool.dispatch_verification_task(
             "SPECIFY_ARTIFACTS",
@@ -85,10 +209,16 @@ class VerificatorClient:
         elif result and "artifacts" in result:
             artifacts = result["artifacts"]
             logger.info(f"Verificator specified {len(artifacts)} artifacts for task: {task_title}")
+            # Cache the result
+            if self._cache:
+                self._cache.set(cache_key, artifacts)
             return artifacts
 
         logger.warning("Verificator failed to specify artifacts, using regex fallback")
-        return self._fallback_infer_artifacts(task_title, task_description)
+        artifacts = self._fallback_infer_artifacts(task_title, task_description)
+        if self._cache:
+            self._cache.set(cache_key, artifacts, ttl=600)  # 10 min for fallback
+        return artifacts
 
     async def verify_completion(
         self,
@@ -160,12 +290,25 @@ class VerificatorClient:
         Returns:
             Tuple of (is_duplicate: bool, confidence: float)
         """
+        # Check cache first (order tasks consistently for cache key)
+        if self._cache:
+            # Sort titles to ensure same pair always hits same cache key
+            sorted_titles = sorted([task1_title, task2_title])
+            cache_key = self._cache._make_key("duplicate", sorted_titles[0], sorted_titles[1])
+            cached = self._cache.get(cache_key)
+            if cached is not None:
+                logger.debug(f"Cache hit for duplicate check")
+                return cached
+
         if not self.worker_pool.is_verificator_available():
             logger.debug("Verificator not available, using word overlap fallback")
-            return self._fallback_check_duplicate(
+            result = self._fallback_check_duplicate(
                 task1_title, task1_description,
                 task2_title, task2_description
             )
+            if self._cache:
+                self._cache.set(cache_key, result, ttl=600)  # 10 min for fallback
+            return result
 
         result = await self.worker_pool.dispatch_verification_task(
             "CHECK_DUPLICATE",
@@ -183,13 +326,35 @@ class VerificatorClient:
         elif result and "is_duplicate" in result:
             is_duplicate = result.get("is_duplicate", False)
             confidence = result.get("confidence", 0.0)
-            return is_duplicate, confidence
+            dup_result = (is_duplicate, confidence)
+            # Cache the result
+            if self._cache:
+                self._cache.set(cache_key, dup_result)
+            return dup_result
 
         logger.warning("Verificator failed, using word overlap fallback")
-        return self._fallback_check_duplicate(
+        fallback_result = self._fallback_check_duplicate(
             task1_title, task1_description,
             task2_title, task2_description
         )
+        if self._cache:
+            self._cache.set(cache_key, fallback_result, ttl=600)
+        return fallback_result
+
+    def get_cache_stats(self) -> Optional[Dict[str, Any]]:
+        """Get cache statistics for monitoring."""
+        if self._cache:
+            return self._cache.stats
+        return None
+
+    def invalidate_cache(self, prefix: Optional[str] = None) -> int:
+        """Invalidate cache entries. If prefix given, only those; otherwise all."""
+        if not self._cache:
+            return 0
+        if prefix:
+            return self._cache.invalidate_prefix(prefix)
+        self._cache.clear()
+        return -1  # Indicates full clear
 
     async def match_project(
         self,

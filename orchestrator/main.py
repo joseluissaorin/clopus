@@ -6,8 +6,10 @@ Main orchestrator that coordinates all CLOPUS operations.
 """
 
 import asyncio
+import json
 import signal
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -108,6 +110,19 @@ class Orchestrator:
         )
         await self.memory.initialize()
         logger.info("Memory system initialized")
+
+        # =====================================================================
+        # SELF-HEALING ON STARTUP
+        # =====================================================================
+        # Reset stale assigned tasks (from previous run that didn't complete)
+        reset_count = await self.memory.reset_stale_assigned_tasks()
+        if reset_count > 0:
+            logger.info(f"Self-healing: Reset {reset_count} stale assigned tasks to pending")
+
+        # Deduplicate pending objectives
+        dup_count = await self.memory.deduplicate_pending_objectives()
+        if dup_count > 0:
+            logger.info(f"Self-healing: Marked {dup_count} duplicate objectives")
 
         # Initialize confidence engine
         self.confidence_engine = ConfidenceEngine(
@@ -345,6 +360,7 @@ class Orchestrator:
             asyncio.create_task(self._status_loop()),
             asyncio.create_task(self._heartbeat_loop()),  # Completion guardian
             asyncio.create_task(self._collaboration_loop()),  # Inter-worker communication
+            asyncio.create_task(self._self_healing_loop()),  # Autonomous recovery
         ]
 
         # Wait for shutdown
@@ -1057,6 +1073,128 @@ class Orchestrator:
             except Exception as e:
                 logger.error(f"Error in collaboration loop: {e}", exc_info=True)
                 await asyncio.sleep(2)  # Brief pause before retrying
+
+    async def _self_healing_loop(self) -> None:
+        """
+        Autonomous self-healing loop.
+
+        Periodically performs maintenance tasks to keep the system healthy:
+        1. Reset tasks stuck in 'assigned' state too long
+        2. Deduplicate incoming objectives
+        3. Clean up stale IPC files
+        4. Verify worker health and restart if needed
+        """
+        logger.info("Self-healing loop started (Autonomous recovery)")
+
+        # Wait for initial startup to complete
+        await asyncio.sleep(60)
+
+        while self.running:
+            try:
+                # Run self-healing every 5 minutes
+                healing_actions = []
+
+                # 1. Reset stale assigned tasks (stuck > 30 minutes)
+                stale_count = await self.memory.cleanup_stale_tasks(stale_threshold_minutes=30)
+                if stale_count > 0:
+                    healing_actions.append(f"Reset {stale_count} stale tasks")
+
+                # 2. Deduplicate pending objectives
+                dup_count = await self.memory.deduplicate_pending_objectives()
+                if dup_count > 0:
+                    healing_actions.append(f"Deduplicated {dup_count} objectives")
+
+                # 3. Check for orphaned pending.json files (worker died mid-task)
+                orphan_count = await self._cleanup_orphaned_ipc_files()
+                if orphan_count > 0:
+                    healing_actions.append(f"Cleaned {orphan_count} orphaned IPC files")
+
+                # 4. Verify workers are responding (health check)
+                unhealthy_count = await self._check_worker_health()
+                if unhealthy_count > 0:
+                    healing_actions.append(f"Detected {unhealthy_count} unhealthy workers")
+
+                # Log healing actions if any were taken
+                if healing_actions:
+                    logger.info(f"Self-healing cycle completed: {', '.join(healing_actions)}")
+
+                # Run every 5 minutes
+                await asyncio.sleep(300)
+
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Error in self-healing loop: {e}", exc_info=True)
+                await asyncio.sleep(60)  # Wait a minute before retrying
+
+    async def _cleanup_orphaned_ipc_files(self) -> int:
+        """Clean up orphaned IPC files from workers that died mid-task."""
+        orphan_count = 0
+        ipc_base = Path("/app/ipc/tasks")
+
+        if not ipc_base.exists():
+            return 0
+
+        for worker_dir in ipc_base.iterdir():
+            if not worker_dir.is_dir():
+                continue
+
+            pending_file = worker_dir / "pending.json"
+            status_file = worker_dir / "status.json"
+
+            # If pending.json exists but status shows idle, clean up
+            if pending_file.exists() and status_file.exists():
+                try:
+                    status_data = json.loads(status_file.read_text())
+                    status = status_data.get("status", "")
+                    updated_at = status_data.get("updated_at", "")
+
+                    # If worker is idle but has pending file, it's orphaned
+                    if status == "idle":
+                        # Check if pending file is old (> 2 minutes)
+                        pending_stat = pending_file.stat()
+                        if time.time() - pending_stat.st_mtime > 120:
+                            logger.warning(f"Cleaning orphaned pending.json in {worker_dir.name}")
+                            pending_file.unlink()
+                            orphan_count += 1
+                except Exception as e:
+                    logger.debug(f"Error checking orphan status for {worker_dir.name}: {e}")
+
+        return orphan_count
+
+    async def _check_worker_health(self) -> int:
+        """Check worker health based on status file updates."""
+        unhealthy_count = 0
+        ipc_base = Path("/app/ipc/tasks")
+        stale_threshold = 60  # Consider unhealthy if no update in 60 seconds
+
+        if not ipc_base.exists():
+            return 0
+
+        for worker_dir in ipc_base.iterdir():
+            if not worker_dir.is_dir():
+                continue
+
+            status_file = worker_dir / "status.json"
+            if status_file.exists():
+                try:
+                    status_data = json.loads(status_file.read_text())
+                    updated_at = status_data.get("updated_at", "")
+
+                    if updated_at:
+                        # Parse ISO format datetime
+                        from datetime import datetime
+                        last_update = datetime.fromisoformat(updated_at.replace('Z', '+00:00'))
+                        now = datetime.now(last_update.tzinfo) if last_update.tzinfo else datetime.now()
+                        age_seconds = (now - last_update).total_seconds()
+
+                        if age_seconds > stale_threshold:
+                            logger.warning(f"Worker {worker_dir.name} appears unhealthy (no update for {age_seconds:.0f}s)")
+                            unhealthy_count += 1
+                except Exception as e:
+                    logger.debug(f"Error checking health for {worker_dir.name}: {e}")
+
+        return unhealthy_count
 
     # =========================================================================
     # PROJECT PATH DETECTION
