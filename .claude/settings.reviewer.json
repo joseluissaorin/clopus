@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "model": "opus",
+  "permissions": {
+    "allow": [
+      "Bash(git:*)",
+      "Bash(npm:*)",
+      "Bash(ls:*)",
+      "Bash(cat:*)",
+      "Bash(head:*)",
+      "Bash(tail:*)",
+      "Bash(grep:*)",
+      "Bash(find:*)",
+      "Bash(wc:*)",
+      "Read(**/*)",
+      "Glob(**/*)",
+      "Grep(**/*)"
+    ],
+    "deny": [
+      "Bash(rm:*)",
+      "Bash(sudo:*)",
+      "Edit(**/*)",
+      "Write(**/*)"
+    ],
+    "additionalDirectories": [
+      "/workspace",
+      "/app/ipc"
+    ],
+    "defaultMode": "plan"
+  },
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/ubuntu/.claude/hooks/log_operation.py",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  },
+  "env": {
+    "CLOPUS_IPC_PATH": "/app/ipc",
+    "CLOPUS_WORKSPACE": "/workspace",
+    "REVIEWER_MODE": "true"
+  }
+}

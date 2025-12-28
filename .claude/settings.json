@@ -1,0 +1,80 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "model": "opus",
+  "permissions": {
+    "allow": [
+      "Bash(git:*)",
+      "Bash(npm:*)",
+      "Bash(npx:*)",
+      "Bash(python:*)",
+      "Bash(pytest:*)",
+      "Bash(pip:*)",
+      "Bash(docker:*)",
+      "Bash(curl:*)",
+      "Bash(ls:*)",
+      "Bash(cat:*)",
+      "Bash(mkdir:*)",
+      "Bash(cp:*)",
+      "Bash(mv:*)",
+      "Bash(head:*)",
+      "Bash(tail:*)",
+      "Bash(grep:*)",
+      "Bash(find:*)",
+      "Bash(wc:*)",
+      "Bash(echo:*)",
+      "Bash(touch:*)",
+      "Bash(chmod:*)",
+      "Read(**/*)",
+      "Edit(**/*)",
+      "Write(**/*)",
+      "Glob(**/*)",
+      "Grep(**/*)"
+    ],
+    "deny": [
+      "Bash(rm -rf:*)",
+      "Bash(sudo:*)",
+      "Bash(shutdown:*)",
+      "Bash(reboot:*)",
+      "Read(.env.production)",
+      "Read(**/.git/config)",
+      "Edit(package-lock.json)",
+      "Edit(yarn.lock)"
+    ],
+    "additionalDirectories": [
+      "/workspace",
+      "/app/ipc",
+      "/app/claude-config"
+    ],
+    "defaultMode": "acceptEdits"
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/ubuntu/.claude/hooks/validate_command.py",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/ubuntu/.claude/hooks/log_operation.py",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  },
+  "env": {
+    "CLOPUS_IPC_PATH": "/app/ipc",
+    "CLOPUS_WORKSPACE": "/workspace"
+  }
+}

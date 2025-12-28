@@ -20,6 +20,19 @@ SYSTEM_PROMPT_FILE="/app/system-prompts/browser.md"
 
 mkdir -p "$IPC_DIR"
 
+STATUS_FILE="$IPC_DIR/status.json"
+STARTED_AT=$(date -Iseconds)
+
+# Function to update worker status
+update_status() {
+    local status="$1"
+    local extra="$2"
+    echo "{\"status\": \"$status\", \"role\": \"$WORKER_ROLE\", \"model\": \"claude-sonnet-4-20250514\", \"started_at\": \"$STARTED_AT\", \"updated_at\": \"$(date -Iseconds)\"$extra}" > "$STATUS_FILE"
+}
+
+# Initial status - starting
+update_status "starting" ""
+
 # =============================================================================
 # Start Virtual Display (Xvfb)
 # =============================================================================
@@ -55,6 +68,9 @@ sleep 1
 
 echo "[Chrome Worker $WORKER_ID] VNC ready at :5900, noVNC ready at :6080"
 
+# Update status to idle after VNC is ready
+update_status "idle" ""
+
 # =============================================================================
 # Claude Code Authentication
 # =============================================================================
@@ -85,6 +101,9 @@ while true; do
         CWD=$(jq -r '.cwd // "/workspace"' "$PENDING_FILE")
 
         echo "[Chrome Worker $WORKER_ID] Processing task: $TASK_ID"
+
+        # Update status to busy
+        update_status "busy" ", \"task_id\": \"$TASK_ID\", \"task_started\": \"$(date -Iseconds)\""
 
         # Acknowledge the task
         echo "{\"task_id\": \"$TASK_ID\", \"acknowledged_at\": \"$(date -Iseconds)\"}" > "$ACK_FILE"
@@ -125,6 +144,9 @@ while true; do
 
         # Clean up ack file
         rm -f "$ACK_FILE"
+
+        # Update status back to idle
+        update_status "idle" ", \"last_task\": \"$TASK_ID\""
     fi
 
     # Poll interval (500ms)

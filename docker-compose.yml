@@ -85,6 +85,8 @@ services:
       context: .
       dockerfile: Dockerfile.orchestrator
     container_name: clopus-orchestrator
+    ports:
+      - "8765:8765"  # WebSocket server for TUI
     volumes:
       - ./:/app
       - workspace:/workspace

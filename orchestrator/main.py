@@ -44,6 +44,20 @@ from .message_router import MessageRouter
 from .context_injector import ContextInjector
 from .ai_planner import AIPlanner, create_ai_planner
 from .ai_first import AIFirstEngine, set_ai_engine, get_ai_engine
+from .websocket_server import (
+    start_websocket_server,
+    stop_websocket_server,
+    emit_worker_status,
+    emit_task_completed,
+    emit_task_failed,
+    emit_question_pending,
+    emit_validation_result,
+    emit_self_healing,
+    emit_objective_created,
+    emit_objective_completed,
+    emit_project_update,
+    WebSocketServer,
+)
 from validation.pipeline import ValidationPipeline
 
 # Configure logging
@@ -97,6 +111,9 @@ class Orchestrator:
 
         # AI-first intelligence engine (NEW in v3.2)
         self.ai_engine: Optional[AIFirstEngine] = None
+
+        # WebSocket server for TUI real-time updates
+        self.websocket_server: Optional[WebSocketServer] = None
 
     async def initialize(self) -> None:
         """Initialize all components."""
@@ -332,6 +349,19 @@ class Orchestrator:
         self.worker_pool.set_skills_engine(self.skills_engine)
 
         logger.info("Component integrations configured")
+
+        # =====================================================================
+        # WEBSOCKET SERVER FOR TUI REAL-TIME UPDATES
+        # =====================================================================
+        self.websocket_server = await start_websocket_server(
+            host="0.0.0.0",
+            port=8765
+        )
+        if self.websocket_server:
+            logger.info("WebSocket server started on ws://0.0.0.0:8765")
+        else:
+            logger.warning("WebSocket server could not be started (websockets package may be missing)")
+
         logger.info("CLOPUS orchestrator fully initialized")
 
     async def start(self) -> None:
@@ -389,6 +419,10 @@ class Orchestrator:
 
         if self.worker_pool:
             await self.worker_pool.shutdown()
+
+        # Stop WebSocket server
+        await stop_websocket_server()
+        logger.info("WebSocket server stopped")
 
         logger.info("CLOPUS orchestrator shutdown complete")
 
@@ -544,11 +578,18 @@ class Orchestrator:
 
             if confidence < self.settings.confidence_config.threshold:
                 # Ask for clarification
-                await self.user_interaction.ask_clarification(
+                question_id = await self.user_interaction.ask_clarification(
                     f"I need clarification on this objective: {objective.content}\n\nSpecifically: {parsed.get('unclear_points', 'general scope')}",
                     objective_id=objective.id,
                     confidence_score=confidence
                 )
+
+                # Emit question pending event for TUI
+                if question_id:
+                    emit_question_pending(
+                        question_id=question_id,
+                        content=f"Clarification needed for objective (confidence: {confidence:.0%})"
+                    )
                 return
 
             # =====================================================================
@@ -740,6 +781,14 @@ class Orchestrator:
 
                 if dispatched:
                     logger.info(f"Assigned task '{task.title}' to worker {worker.id}")
+
+                    # Emit worker status for TUI
+                    emit_worker_status(
+                        worker_id=worker.id,
+                        status="busy",
+                        role=worker.role,
+                        task_id=task.id
+                    )
                 else:
                     # Dispatch failed (worker didn't acknowledge) - revert assignment
                     # Reset task to pending so it can be reassigned
@@ -776,8 +825,15 @@ class Orchestrator:
                         ).strip()
 
                         if objective_text:
-                            await self.memory.create_objective(objective_text)
+                            objective_id = await self.memory.create_objective(objective_text)
                             logger.info(f"New objective from file: {file.name}")
+
+                            # Emit objective created event for TUI
+                            if objective_id:
+                                emit_objective_created(
+                                    objective_id=objective_id,
+                                    content=objective_text
+                                )
 
                             # Archive file
                             archive_dir = objectives_dir / "processed"
@@ -885,6 +941,31 @@ class Orchestrator:
                             result.get("error") or ("Validation failed" if not validation_passed else None)
                         )
 
+                        # Emit WebSocket events for TUI
+                        if success:
+                            emit_task_completed(
+                                task_id=task_id,
+                                title=task.title if task else "Unknown",
+                                project=task.project if hasattr(task, 'project') and task.project else "",
+                                worker_id=worker_id
+                            )
+                        else:
+                            emit_task_failed(
+                                task_id=task_id,
+                                title=task.title if task else "Unknown",
+                                error=result.get("error", ""),
+                                worker_id=worker_id
+                            )
+
+                        # Worker is now idle
+                        worker_info = self.worker_pool.workers.get(worker_id, {})
+                        emit_worker_status(
+                            worker_id=worker_id,
+                            status="idle",
+                            role=worker_info.get("role", "unknown"),
+                            task_id=None
+                        )
+
                         if task:
                             # =============================================================
                             # RECORD OUTCOME FOR LEARNING (Confidence Engine)
@@ -980,6 +1061,13 @@ class Orchestrator:
                                 await self.memory.complete_objective(
                                     task.objective_id,
                                     success=all_success
+                                )
+
+                                # Emit objective completion event for TUI
+                                emit_objective_completed(
+                                    objective_id=task.objective_id,
+                                    success=all_success,
+                                    task_count=len(objective_tasks)
                                 )
 
                                 # Extract template and sync to GitHub
@@ -1117,6 +1205,14 @@ class Orchestrator:
                 # Log healing actions if any were taken
                 if healing_actions:
                     logger.info(f"Self-healing cycle completed: {', '.join(healing_actions)}")
+
+                    # Emit self-healing event for TUI
+                    total_actions = stale_count + dup_count + orphan_count + unhealthy_count
+                    emit_self_healing(
+                        action="cycle_completed",
+                        count=total_actions,
+                        details="; ".join(healing_actions)
+                    )
 
                 # Run every 5 minutes
                 await asyncio.sleep(300)
@@ -1457,6 +1553,19 @@ class Orchestrator:
                     action="passed",
                     details={"task_id": task.id, "summary": result.summary}
                 )
+
+                # Emit validation result for TUI
+                emit_validation_result(
+                    task_id=task.id,
+                    passed=True,
+                    stages=[
+                        {
+                            "stage": s.stage.value if hasattr(s.stage, 'value') else str(s.stage),
+                            "status": s.status.value if hasattr(s.status, 'value') else str(s.status),
+                        }
+                        for s in result.stages
+                    ]
+                )
                 return True
             else:
                 # =====================================================================
@@ -1498,6 +1607,19 @@ class Orchestrator:
                         "task_id": task.id,
                         "stages_failed": failed_stages
                     }
+                )
+
+                # Emit validation result for TUI
+                emit_validation_result(
+                    task_id=task.id,
+                    passed=False,
+                    stages=[
+                        {
+                            "stage": s.stage.value if hasattr(s.stage, 'value') else str(s.stage),
+                            "status": s.status.value if hasattr(s.status, 'value') else str(s.status),
+                        }
+                        for s in result.stages
+                    ]
                 )
 
                 # Create a fix task for the debugger
@@ -1697,6 +1819,13 @@ echo $! > {project / ".clopus" / "dev_server.pid"}
                     )
 
                     logger.info(f"✓ Dev server started: http://0.0.0.0:{port}")
+
+                    # Emit project update for TUI
+                    emit_project_update(
+                        project_name=project_name,
+                        status="running",
+                        port=port
+                    )
 
                     # Store the server info
                     server_info = project / ".clopus" / "server_info.json"

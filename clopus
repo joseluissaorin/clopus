@@ -54,6 +54,7 @@ ${BOLD}COMMANDS:${NC}
     ${GREEN}stop${NC}               Stop CLOPUS system
     ${GREEN}restart${NC}            Restart CLOPUS system
     ${GREEN}status${NC}             Show system status
+    ${GREEN}tui${NC}                Launch Terminal User Interface
 
     ${GREEN}objective${NC} <text>   Give CLOPUS an objective
     ${GREEN}questions${NC}          List pending questions
@@ -562,6 +563,48 @@ cmd_version() {
     echo "CLOPUS v$VERSION"
 }
 
+# TUI command
+cmd_tui() {
+    log_info "Launching CLOPUS TUI..."
+
+    # Check if Python and requirements are available
+    if ! command -v python3 &>/dev/null; then
+        log_error "Python 3 is required for the TUI."
+        exit 1
+    fi
+
+    # Check if TUI requirements are installed
+    if ! python3 -c "import textual" &>/dev/null; then
+        log_info "Installing TUI dependencies..."
+        pip3 install -r "$SCRIPT_DIR/tui/requirements.txt"
+    fi
+
+    # Parse TUI arguments
+    local tui_args=""
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            --websocket|-ws)
+                tui_args="$tui_args --websocket"
+                shift
+                ;;
+            --light)
+                tui_args="$tui_args --light"
+                shift
+                ;;
+            --no-notifications)
+                tui_args="$tui_args --no-notifications"
+                shift
+                ;;
+            *)
+                shift
+                ;;
+        esac
+    done
+
+    # Launch TUI
+    PYTHONPATH="$SCRIPT_DIR" python3 -m tui.main $tui_args
+}
+
 # Sync command
 cmd_sync() {
     log_info "Syncing to GitHub..."
@@ -616,6 +659,10 @@ main() {
         status)
             shift
             cmd_status "$@"
+            ;;
+        tui)
+            shift
+            cmd_tui "$@"
             ;;
         objective|obj)
             shift

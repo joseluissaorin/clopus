@@ -30,6 +30,7 @@ Give it an objective like *"Build a todo app with React and FastAPI"* and watch 
 - [Features](#features)
 - [Quick Start](#quick-start)
 - [Usage](#usage)
+- [Terminal User Interface (TUI)](#terminal-user-interface-tui)
 - [Architecture](#architecture)
 - [Worker Roles](#worker-roles)
 - [Designer Agent](#designer-agent)
@@ -68,6 +69,7 @@ Traditional AI coding assistants require constant human guidance. CLOPUS takes a
 | No design consistency | Designer agent creates unified branding |
 | Loses progress on restart | Project continuity system resumes work |
 | No verification | Verificator ensures tasks actually complete |
+| CLI-only interaction | Rich Terminal UI with 10 screens |
 
 ### Key Differentiators
 
@@ -76,6 +78,7 @@ Traditional AI coding assistants require constant human guidance. CLOPUS takes a
 - **Production Quality**: 8-stage validation ensures generated code is production-ready
 - **Persistent Memory**: ChromaDB-powered semantic memory means CLOPUS remembers solutions and patterns
 - **Extensible**: MCP servers, skills, and templates can be added without code changes
+- **Rich Terminal UI**: Monitor workers, tasks, and projects in real-time with a 10-screen TUI
 
 ## Features
 
@@ -126,6 +129,14 @@ Every piece of generated code passes through:
 - **Worker 9 (Browser-Headless)**: Playwright-based automation for fast, headless web tasks
 - **Worker 10 (Browser-Chrome)**: Chrome with VNC for visual debugging and Claude extension support
 - **MCP Servers**: Playwright MCP, Gmail MCP, Firecrawl MCP for comprehensive web/email automation
+
+### Terminal User Interface (TUI)
+- **10 Screens**: Dashboard, Workers, Projects, Tasks, Logs, Objectives, Memory, Questions, Config, Browser
+- **Real-Time Updates**: WebSocket connection for live task and worker status
+- **Worker Control**: Restart, stop, and view logs for any worker
+- **Task Management**: Filter, retry, cancel, and adjust priority
+- **Question Answering**: Quick-answer buttons for common responses
+- **Light/Dark Themes**: Toggle with Ctrl+T
 
 ### Universal Dev Tools
 Pre-installed: Python, Node.js, Go, Rust, PHP, Ruby, cloud CLIs (AWS, GCP, Azure, Vercel, Railway, Fly.io), Docker, kubectl, terraform, and more.
@@ -190,6 +201,8 @@ curl -fsSL https://raw.githubusercontent.com/joseluissaorin/clopus/main/install.
 ./clopus stop                   # Stop all services
 ./clopus restart                # Restart services
 ./clopus status                 # Show system status
+./clopus tui                    # Launch Terminal UI (light theme, WebSocket)
+./clopus tui --dark             # Launch TUI with dark theme
 
 # Objectives
 ./clopus objective "..."        # Submit a new objective
@@ -239,6 +252,123 @@ echo '{"question_id": "q123", "answer": "Use JWT for auth"}' > ipc/interface/ans
 # View current status
 cat ipc/interface/status.json
 ```
+
+## Terminal User Interface (TUI)
+
+CLOPUS includes a rich terminal-based user interface built with [Textual](https://textual.textualize.io/) for real-time monitoring and control.
+
+### Starting the TUI
+
+```bash
+# Start with defaults (light theme, WebSocket enabled)
+./clopus tui
+
+# Start with dark theme
+./clopus tui --dark
+
+# Start without WebSocket (uses mock data for testing)
+./clopus tui --no-websocket
+```
+
+### TUI Screens
+
+| Screen | Key | Description |
+|--------|-----|-------------|
+| **Dashboard** | `d` | System overview with stats, progress, and recent activity |
+| **Workers** | `w` | Worker status, task assignments, logs, restart/stop controls |
+| **Projects** | `p` | Project list, validation status, dev server controls |
+| **Tasks** | `t` | Task queue with filtering, retry/cancel actions, priority adjustment |
+| **Logs** | `l` | Real-time logs from orchestrator and all workers |
+| **Objectives** | `o` | Submit new objectives, view progress, cancel objectives |
+| **Memory** | `m` | Memory system browser, search, cleanup tools |
+| **Questions** | `q` | Answer pending questions with quick-answer buttons |
+| **Config** | `c` | Edit system configuration (confidence, heartbeat, validation) |
+| **Browser** | `b` | Browser worker controls, VNC access, screenshot capture |
+
+### Keyboard Shortcuts
+
+```
+Navigation:
+  d     Dashboard          w     Workers           p     Projects
+  t     Tasks              l     Logs              o     Objectives
+  m     Memory             q     Questions         c     Config
+  b     Browser
+
+Actions:
+  r         Refresh current view
+  Ctrl+T    Toggle dark/light theme
+  Ctrl+Q    Quit
+  ?         Show help
+
+Screen-specific:
+  Enter     Select/Confirm
+  Escape    Go back / Cancel
+  Tab       Next field
+  /         Search (where available)
+```
+
+### Dashboard
+
+The dashboard provides a real-time overview:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│ System Health          │ Statistics                             │
+│ ● Workers: 10/11       │ Total Tasks:    264                    │
+│ ● Memory: OK           │ Completed:      30                     │
+│ ● Database: OK         │ Active Workers: 7/11                   │
+├─────────────────────────────────────────────────────────────────┤
+│ Task Progress                                                    │
+│ [████████████░░░░░░░░░░░░░] 30/264 (11%)                       │
+│ [New Objective] [View Tasks] [View Logs]                        │
+├─────────────────────────────────────────────────────────────────┤
+│ Activity              │ Recent Activity                         │
+│ ▁▂▃▅▇▆▅▄▃▂▁          │ ✓ Initialize FastAPI project            │
+│ Worker Busy: ▂▃▄▅▆▇   │ ✗ Clean up removed filter components    │
+│                       │ ● Implement feature X                    │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Workers Screen
+
+Monitor and control all 11 workers:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│ Workers                         │ Worker Details                 │
+│ ID  Role             Status     │ Worker 1                       │
+│ ─────────────────────────────── │ Role: CODER                    │
+│  1  CODER            BUSY       │ Status: BUSY                   │
+│  2  TESTER           BUSY       │ Model: claude-sonnet-4         │
+│  3  REVIEWER         IDLE       │ Task: 8f8a4c95...              │
+│  4  RESEARCHER       BUSY       │ Started: 2025-12-28T22:00:00   │
+│  5  DEBUGGER         BUSY       │                                │
+│  6  DESIGNER         BUSY       │ [Restart] [Stop] [View Logs]   │
+│  7  HEARTBEAT        IDLE       ├────────────────────────────────│
+│  8  VERIFICATOR      BUSY       │ Recent Logs:                   │
+│  9  BROWSER-HEADLESS BUSY       │ [22:15:01] Processing task...  │
+│ 10  BROWSER-CHROME   IDLE       │ [22:15:05] Claude Code output  │
+│ 11  SERVICES         IDLE       │ [22:15:10] Task completed      │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Real-Time Updates
+
+The TUI connects to the orchestrator via WebSocket (port 8765) for real-time updates:
+
+- **Task Events**: Completion, failure, assignment notifications
+- **Worker Status**: Busy/idle state changes
+- **Questions**: Desktop notifications when questions are pending
+- **Validation Results**: Live validation stage progress
+
+### Data Sources
+
+| Source | Data |
+|--------|------|
+| SQLite Database | Tasks, objectives, projects, questions, activity log |
+| IPC Files | Worker status, task assignments, session info |
+| Docker | Container status, logs |
+| WebSocket | Real-time events from orchestrator |
 
 ### Example Session
 
@@ -1336,8 +1466,10 @@ docker-compose build
 
 ## Roadmap
 
-### v3.1 (Current)
-- [ ] Web UI dashboard
+### v3.2 (Current)
+- [x] Terminal User Interface (TUI) *(implemented)* - 10-screen Textual-based interface with real-time updates
+- [x] AI-First Planning *(implemented)* - Claude-powered task planning replaces pattern matching
+- [x] Claude Code Integration *(implemented)* - Session continuity, hooks, role-specific permissions
 - [x] Multi-project management *(implemented)*
 - [x] Verificator Worker *(implemented)* - Intelligent artifact verification and semantic deduplication
 - [x] 11 Workers Architecture *(implemented)* - Expanded from 8 to 11 workers
@@ -1347,10 +1479,11 @@ docker-compose build
 - [x] Inter-Worker Collaboration *(implemented)* - Workers can communicate, request browser automation, share knowledge
 - [x] Context Injection *(implemented)* - Pre-task memory search for relevant patterns and solutions
 - [x] Collaboration MCP Server *(implemented)* - 9 tools for ask_worker, spawn_subtask, browser automation
+- [ ] Web UI dashboard
 - [ ] Cost tracking and budgets
 - [ ] Custom worker roles
 
-### v3.2
+### v3.3
 - [ ] Cloud deployment (AWS, GCP)
 - [ ] Team collaboration features
 - [ ] Webhook notifications

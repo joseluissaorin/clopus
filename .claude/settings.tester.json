@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "model": "opus",
+  "permissions": {
+    "allow": [
+      "Bash(git:*)",
+      "Bash(npm:*)",
+      "Bash(npx:*)",
+      "Bash(python:*)",
+      "Bash(pytest:*)",
+      "Bash(pip:*)",
+      "Bash(playwright:*)",
+      "Bash(curl:*)",
+      "Bash(ls:*)",
+      "Bash(cat:*)",
+      "Bash(mkdir:*)",
+      "Bash(cp:*)",
+      "Bash(mv:*)",
+      "Bash(head:*)",
+      "Bash(tail:*)",
+      "Bash(grep:*)",
+      "Bash(find:*)",
+      "Read(**/*)",
+      "Edit(**/*.test.*)",
+      "Edit(**/*.spec.*)",
+      "Edit(**/__tests__/**/*)",
+      "Edit(**/tests/**/*)",
+      "Write(**/*.test.*)",
+      "Write(**/*.spec.*)",
+      "Glob(**/*)",
+      "Grep(**/*)"
+    ],
+    "deny": [
+      "Bash(rm -rf:*)",
+      "Bash(sudo:*)",
+      "Edit(**/src/**/*.ts)",
+      "Edit(**/src/**/*.tsx)",
+      "Edit(**/app/**/*.py)"
+    ],
+    "additionalDirectories": [
+      "/workspace",
+      "/app/ipc",
+      "/output/screenshots"
+    ],
+    "defaultMode": "acceptEdits"
+  },
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/ubuntu/.claude/hooks/log_operation.py",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  },
+  "env": {
+    "CLOPUS_IPC_PATH": "/app/ipc",
+    "CLOPUS_WORKSPACE": "/workspace",
+    "PLAYWRIGHT_BROWSERS_PATH": "/home/ubuntu/.cache/ms-playwright",
+    "TESTER_MODE": "true"
+  }
+}
