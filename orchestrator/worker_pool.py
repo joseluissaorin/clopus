@@ -218,6 +218,32 @@ Write your analysis to the file specified in the task. Be thorough - check every
    - Ensure visual consistency across the entire application
 
 Always output your design decisions to .clopus/design/DESIGN_SYSTEM.md""",
+
+            "verificator": """You are the Intelligent Verificator. Your job is to use Claude's intelligence to verify, analyze, and validate work.
+
+You will receive structured verification requests. Your responses MUST be valid JSON that matches the expected output format for each task type.
+
+TASK TYPES:
+
+1. SPECIFY_ARTIFACTS: Analyze a task description and determine what files/endpoints it should create.
+   Output: {"artifacts": ["path/to/file.py", "path/to/other.js"], "reasoning": "..."}
+
+2. VERIFY_COMPLETION: Check if a completed task actually created what it claimed.
+   Output: {"verified": true/false, "missing": ["file1.py"], "found": ["file2.py"], "reasoning": "..."}
+
+3. CHECK_DUPLICATE: Determine if two tasks are semantically the same (regardless of wording).
+   Output: {"is_duplicate": true/false, "confidence": 0.0-1.0, "reasoning": "..."}
+
+4. MATCH_PROJECT: Match an objective to the correct project based on content analysis.
+   Output: {"project_path": "/workspace/project-name", "confidence": 0.0-1.0, "reasoning": "..."}
+
+5. AUDIT_COMPLETED: Audit a completed task to check if its artifacts actually exist.
+   Output: {"passed": true/false, "missing_artifacts": [], "recommendation": "re-run"/"accept"/"manual-review"}
+
+6. SEMANTIC_CHECK: Check if task output semantically matches what was requested.
+   Output: {"matches": true/false, "coverage": 0.0-1.0, "gaps": ["missing feature X"], "reasoning": "..."}
+
+ALWAYS respond with valid JSON only. No markdown, no explanation outside JSON.""",
         }
 
         instruction = role_instructions.get(role, role_instructions["coder"])
@@ -454,4 +480,241 @@ Always output your design decisions to .clopus/design/DESIGN_SYSTEM.md""",
             if worker["status"] == "idle":
                 return worker_id
 
+        return None
+
+    def get_verificator_worker_id(self) -> Optional[int]:
+        """Get the dedicated verificator worker ID."""
+        for worker_id, worker in self.workers.items():
+            if worker["role"] == "verificator":
+                return worker_id
+        return None
+
+    def is_verificator_available(self) -> bool:
+        """Check if the verificator worker is available (idle)."""
+        worker_id = self.get_verificator_worker_id()
+        if worker_id is None:
+            return False
+        return self.workers[worker_id]["status"] == "idle"
+
+    async def dispatch_verification_task(
+        self,
+        task_type: str,
+        task_data: Dict[str, Any],
+        timeout_seconds: int = 60
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Dispatch a verification task to the verificator worker and wait for result.
+
+        Args:
+            task_type: One of SPECIFY_ARTIFACTS, VERIFY_COMPLETION, CHECK_DUPLICATE,
+                      MATCH_PROJECT, AUDIT_COMPLETED, SEMANTIC_CHECK
+            task_data: Context data for the verification
+            timeout_seconds: Maximum time to wait for result
+
+        Returns:
+            Parsed JSON result from verificator, or None if failed/timeout
+        """
+        import uuid
+
+        worker_id = self.get_verificator_worker_id()
+        if worker_id is None:
+            logger.error("No verificator worker found")
+            return None
+
+        worker = self.workers[worker_id]
+
+        # Wait for worker to become available (with timeout)
+        wait_start = datetime.now()
+        while worker["status"] != "idle":
+            await asyncio.sleep(0.5)
+            if (datetime.now() - wait_start).total_seconds() > timeout_seconds:
+                logger.warning("Verificator worker not available within timeout")
+                return None
+
+        # Build verification prompt
+        prompt = self._build_verification_prompt(task_type, task_data)
+
+        # Create unique task ID
+        verification_task_id = f"verify-{task_type.lower()}-{uuid.uuid4().hex[:8]}"
+
+        # Dispatch task
+        task_json = {
+            "task_id": verification_task_id,
+            "prompt": prompt,
+            "cwd": task_data.get("project_path", "/workspace"),
+            "dispatched_at": datetime.now().isoformat()
+        }
+
+        pending_file = worker["ipc_dir"] / "pending.json"
+        pending_file.write_text(json.dumps(task_json, indent=2))
+
+        worker["status"] = "busy"
+        worker["current_task"] = verification_task_id
+
+        logger.info(f"Dispatched verification task {verification_task_id} ({task_type})")
+
+        # Wait for result
+        result_file = worker["ipc_dir"] / "result.json"
+        start_time = datetime.now()
+
+        while (datetime.now() - start_time).total_seconds() < timeout_seconds:
+            if result_file.exists():
+                try:
+                    result_data = json.loads(result_file.read_text())
+                    result_file.unlink()
+
+                    worker["status"] = "idle"
+                    worker["current_task"] = None
+
+                    # Parse the actual output from Claude's response
+                    output = result_data.get("output", "")
+                    return self._parse_verification_result(output, task_type)
+
+                except json.JSONDecodeError as e:
+                    logger.error(f"Invalid result JSON: {e}")
+                    worker["status"] = "idle"
+                    worker["current_task"] = None
+                    return None
+
+            await asyncio.sleep(0.5)
+
+        # Timeout
+        logger.warning(f"Verification task {verification_task_id} timed out")
+        worker["status"] = "idle"
+        worker["current_task"] = None
+        return None
+
+    def _build_verification_prompt(self, task_type: str, task_data: Dict[str, Any]) -> str:
+        """Build a structured verification prompt."""
+        prompts = {
+            "SPECIFY_ARTIFACTS": f"""TASK TYPE: SPECIFY_ARTIFACTS
+
+Analyze this task and determine what files/endpoints it should create:
+
+TASK TITLE: {task_data.get('title', 'Unknown')}
+TASK DESCRIPTION: {task_data.get('description', 'No description')}
+PROJECT PATH: {task_data.get('project_path', '/workspace')}
+
+Based on the task description:
+1. What specific files should be created? (include full paths relative to project root)
+2. What API endpoints should be created? (if applicable)
+3. What other artifacts are expected?
+
+Respond with JSON:
+{{"artifacts": ["path/to/file1.py", "path/to/file2.ts"], "reasoning": "explanation"}}""",
+
+            "VERIFY_COMPLETION": f"""TASK TYPE: VERIFY_COMPLETION
+
+Verify if this completed task actually created what it claimed:
+
+TASK TITLE: {task_data.get('title', 'Unknown')}
+TASK DESCRIPTION: {task_data.get('description', 'No description')}
+EXPECTED ARTIFACTS: {json.dumps(task_data.get('expected_artifacts', []))}
+PROJECT PATH: {task_data.get('project_path', '/workspace')}
+TASK RESULT: {task_data.get('result', 'No result provided')}
+
+Check if the expected artifacts actually exist in the project.
+Use ls and cat commands to verify file existence and content.
+
+Respond with JSON:
+{{"verified": true/false, "missing": [], "found": [], "reasoning": "explanation"}}""",
+
+            "CHECK_DUPLICATE": f"""TASK TYPE: CHECK_DUPLICATE
+
+Determine if these two tasks are semantically the same (even if worded differently):
+
+TASK 1 TITLE: {task_data.get('task1_title', 'Unknown')}
+TASK 1 DESCRIPTION: {task_data.get('task1_description', '')}
+
+TASK 2 TITLE: {task_data.get('task2_title', 'Unknown')}
+TASK 2 DESCRIPTION: {task_data.get('task2_description', '')}
+
+Consider:
+- Do they create the same files/artifacts?
+- Do they implement the same functionality?
+- Would completing one make the other redundant?
+
+Respond with JSON:
+{{"is_duplicate": true/false, "confidence": 0.0-1.0, "reasoning": "explanation"}}""",
+
+            "MATCH_PROJECT": f"""TASK TYPE: MATCH_PROJECT
+
+Match this objective to the correct project:
+
+OBJECTIVE: {task_data.get('objective_content', 'Unknown')}
+
+AVAILABLE PROJECTS:
+{json.dumps(task_data.get('projects', []), indent=2)}
+
+Analyze the objective content and determine which project it refers to.
+Consider: project names, technology stacks, described functionality.
+
+Respond with JSON:
+{{"project_path": "/workspace/project-name", "confidence": 0.0-1.0, "reasoning": "explanation"}}""",
+
+            "AUDIT_COMPLETED": f"""TASK TYPE: AUDIT_COMPLETED
+
+Audit this completed task to verify its artifacts actually exist:
+
+TASK ID: {task_data.get('task_id', 'Unknown')}
+TASK TITLE: {task_data.get('title', 'Unknown')}
+EXPECTED ARTIFACTS: {json.dumps(task_data.get('expected_artifacts', []))}
+PROJECT PATH: {task_data.get('project_path', '/workspace')}
+
+Use file system commands to check if each artifact exists.
+For each missing artifact, note if it's critical or optional.
+
+Respond with JSON:
+{{"passed": true/false, "missing_artifacts": [], "recommendation": "re-run"/"accept"/"manual-review"}}""",
+
+            "SEMANTIC_CHECK": f"""TASK TYPE: SEMANTIC_CHECK
+
+Check if the task output semantically matches what was requested:
+
+TASK TITLE: {task_data.get('title', 'Unknown')}
+TASK DESCRIPTION: {task_data.get('description', 'No description')}
+TASK OUTPUT/RESULT: {task_data.get('result', 'No result')}
+FILES CREATED: {json.dumps(task_data.get('files_created', []))}
+
+Analyze:
+1. Does the output match the task requirements?
+2. What percentage of the requirements are covered?
+3. What gaps exist?
+
+Respond with JSON:
+{{"matches": true/false, "coverage": 0.0-1.0, "gaps": [], "reasoning": "explanation"}}""",
+        }
+
+        return prompts.get(task_type, prompts["SEMANTIC_CHECK"])
+
+    def _parse_verification_result(self, output: str, task_type: str) -> Optional[Dict[str, Any]]:
+        """Parse the JSON result from verificator output."""
+        import re
+
+        # Try to extract JSON from the output
+        # Claude might include some text before/after the JSON
+
+        # First try direct parse
+        try:
+            return json.loads(output.strip())
+        except json.JSONDecodeError:
+            pass
+
+        # Try to find JSON block
+        json_patterns = [
+            r'\{[\s\S]*\}',  # Any JSON object
+            r'```json\s*(\{[\s\S]*?\})\s*```',  # Code block
+            r'```\s*(\{[\s\S]*?\})\s*```',  # Code block without json
+        ]
+
+        for pattern in json_patterns:
+            match = re.search(pattern, output)
+            if match:
+                try:
+                    json_str = match.group(1) if '```' in pattern else match.group(0)
+                    return json.loads(json_str)
+                except (json.JSONDecodeError, IndexError):
+                    continue
+
+        logger.warning(f"Could not parse verification result for {task_type}: {output[:200]}")
         return None

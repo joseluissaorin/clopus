@@ -83,6 +83,8 @@ class Task:
     worker_role: Optional[str] = None
     priority: int = 5
     dependencies: List[str] = None
+    expected_artifacts: List[str] = None  # Files/endpoints this task should create
+    artifacts_verified: bool = False  # Whether artifacts were verified on completion
     created_at: Optional[datetime] = None
     assigned_at: Optional[datetime] = None
     started_at: Optional[datetime] = None
@@ -95,6 +97,8 @@ class Task:
     def __post_init__(self):
         if self.dependencies is None:
             self.dependencies = []
+        if self.expected_artifacts is None:
+            self.expected_artifacts = []
 
 
 @dataclass
@@ -126,6 +130,39 @@ class ShortTermMemory:
         with open(schema_path, "r") as f:
             await conn.executescript(f.read())
         await conn.commit()
+
+        # Run migrations to add new columns if they don't exist
+        await self._run_migrations()
+
+    async def _run_migrations(self) -> None:
+        """Run database migrations for new columns."""
+        conn = await self._get_connection()
+
+        # Check if expected_artifacts column exists in tasks table
+        async with conn.execute("PRAGMA table_info(tasks)") as cursor:
+            columns = {row['name'] for row in await cursor.fetchall()}
+
+        # Add expected_artifacts column if it doesn't exist
+        if 'expected_artifacts' not in columns:
+            try:
+                await conn.execute(
+                    "ALTER TABLE tasks ADD COLUMN expected_artifacts JSON DEFAULT '[]'"
+                )
+                await conn.commit()
+                print("Migration: Added expected_artifacts column to tasks table")
+            except Exception as e:
+                print(f"Migration warning (expected_artifacts): {e}")
+
+        # Add artifacts_verified column if it doesn't exist
+        if 'artifacts_verified' not in columns:
+            try:
+                await conn.execute(
+                    "ALTER TABLE tasks ADD COLUMN artifacts_verified BOOLEAN DEFAULT FALSE"
+                )
+                await conn.commit()
+                print("Migration: Added artifacts_verified column to tasks table")
+            except Exception as e:
+                print(f"Migration warning (artifacts_verified): {e}")
 
     async def _get_connection(self) -> aiosqlite.Connection:
         """Get or create database connection."""
@@ -237,7 +274,8 @@ class ShortTermMemory:
         parent_task_id: Optional[str] = None,
         priority: int = 5,
         dependencies: Optional[List[str]] = None,
-        worker_role: Optional[str] = None
+        worker_role: Optional[str] = None,
+        expected_artifacts: Optional[List[str]] = None
     ) -> Task:
         """Create a new task."""
         task = Task(
@@ -248,6 +286,7 @@ class ShortTermMemory:
             parent_task_id=parent_task_id,
             priority=priority,
             dependencies=dependencies or [],
+            expected_artifacts=expected_artifacts or [],
             worker_role=worker_role,
             created_at=datetime.now()
         )
@@ -257,11 +296,12 @@ class ShortTermMemory:
             await conn.execute(
                 """INSERT INTO tasks
                    (id, objective_id, parent_task_id, title, description, status,
-                    worker_role, priority, dependencies, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    worker_role, priority, dependencies, expected_artifacts, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (task.id, task.objective_id, task.parent_task_id, task.title,
                  task.description, _safe_enum_value(task.status), task.worker_role,
-                 task.priority, json.dumps(task.dependencies), task.created_at)
+                 task.priority, json.dumps(task.dependencies),
+                 json.dumps(task.expected_artifacts), task.created_at)
             )
             await conn.commit()
 
@@ -355,7 +395,59 @@ class ShortTermMemory:
                 row = await cursor.fetchone()
                 return row["retry_count"] if row else 0
 
+    async def mark_artifacts_verified(self, task_id: str, verified: bool = True) -> None:
+        """Mark a task's artifacts as verified."""
+        async with self._lock:
+            conn = await self._get_connection()
+            await conn.execute(
+                "UPDATE tasks SET artifacts_verified = ? WHERE id = ?",
+                (1 if verified else 0, task_id)
+            )
+            await conn.commit()
+
+    async def update_expected_artifacts(self, task_id: str, artifacts: List[str]) -> None:
+        """Update a task's expected artifacts list."""
+        async with self._lock:
+            conn = await self._get_connection()
+            await conn.execute(
+                "UPDATE tasks SET expected_artifacts = ? WHERE id = ?",
+                (json.dumps(artifacts), task_id)
+            )
+            await conn.commit()
+
+    async def get_unverified_completed_tasks(self, objective_id: str) -> List[Task]:
+        """Get completed tasks that haven't had their artifacts verified."""
+        conn = await self._get_connection()
+        async with conn.execute(
+            """SELECT * FROM tasks
+               WHERE objective_id = ?
+               AND status = 'completed'
+               AND (artifacts_verified = 0 OR artifacts_verified IS NULL)
+               AND expected_artifacts IS NOT NULL
+               AND expected_artifacts != '[]'
+               ORDER BY completed_at DESC""",
+            (objective_id,)
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return [self._row_to_task(row) for row in rows]
+
     def _row_to_task(self, row) -> Task:
+        # Handle expected_artifacts column (may not exist in older DBs)
+        expected_artifacts = []
+        try:
+            if "expected_artifacts" in row.keys() and row["expected_artifacts"]:
+                expected_artifacts = json.loads(row["expected_artifacts"])
+        except (KeyError, json.JSONDecodeError):
+            pass
+
+        # Handle artifacts_verified column (may not exist in older DBs)
+        artifacts_verified = False
+        try:
+            if "artifacts_verified" in row.keys():
+                artifacts_verified = bool(row["artifacts_verified"])
+        except KeyError:
+            pass
+
         return Task(
             id=row["id"],
             objective_id=row["objective_id"],
@@ -367,6 +459,8 @@ class ShortTermMemory:
             worker_role=row["worker_role"],
             priority=row["priority"],
             dependencies=json.loads(row["dependencies"]) if row["dependencies"] else [],
+            expected_artifacts=expected_artifacts,
+            artifacts_verified=artifacts_verified,
             created_at=row["created_at"],
             assigned_at=row["assigned_at"],
             started_at=row["started_at"],

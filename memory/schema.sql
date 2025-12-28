@@ -36,6 +36,8 @@ CREATE TABLE IF NOT EXISTS tasks (
     worker_role TEXT,
     priority INTEGER DEFAULT 5,
     dependencies JSON DEFAULT '[]',
+    expected_artifacts JSON DEFAULT '[]',  -- Files/endpoints this task should create
+    artifacts_verified BOOLEAN DEFAULT FALSE,  -- Whether artifacts were verified on completion
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     assigned_at TIMESTAMP,
     started_at TIMESTAMP,

@@ -33,6 +33,7 @@ import logging
 from .project_state import ProjectState, ProjectStateManager, get_state_manager
 from .memory_client import MemoryClient
 from .shared_context import SharedContextManager, get_shared_context
+from .verificator_client import VerificatorClient, get_verificator_client
 
 if TYPE_CHECKING:
     from .worker_pool import WorkerPool
@@ -130,6 +131,14 @@ class HeartbeatAgent:
         self.running = False
         self._last_analysis: Dict[str, GapAnalysis] = {}
         self._pending_analyses: Dict[str, asyncio.Event] = {}
+        self._verificator_client: Optional[VerificatorClient] = None
+
+    @property
+    def verificator_client(self) -> Optional[VerificatorClient]:
+        """Get the verificator client (lazily initialized from global)."""
+        if self._verificator_client is None:
+            self._verificator_client = get_verificator_client(self.worker_pool)
+        return self._verificator_client
 
     # =========================================================================
     # MAIN HEARTBEAT LOOP
@@ -192,6 +201,107 @@ class HeartbeatAgent:
             logger.error(f"Error getting active objectives: {e}")
             return []
 
+    async def _retroactive_artifact_check(self, objective_id: str, project_path: str) -> None:
+        """
+        Check completed tasks that haven't been artifact-verified.
+
+        This catches tasks that were marked complete before artifact verification
+        was implemented, or that somehow bypassed verification.
+
+        Uses the Verificator (Worker 8) for intelligent verification when available.
+        """
+        try:
+            unverified = await self.memory.short_term.get_unverified_completed_tasks(objective_id)
+
+            for task in unverified:
+                if not task.expected_artifacts:
+                    # No artifacts to verify, mark as verified
+                    await self.memory.short_term.mark_artifacts_verified(task.id, True)
+                    continue
+
+                # Try using verificator for intelligent audit
+                if self.verificator_client:
+                    try:
+                        passed, missing, recommendation = await self.verificator_client.audit_completed_task(
+                            task_id=task.id,
+                            task_title=task.title,
+                            expected_artifacts=task.expected_artifacts,
+                            project_path=project_path
+                        )
+
+                        if passed:
+                            await self.memory.short_term.mark_artifacts_verified(task.id, True)
+                            logger.info(f"Retroactive check (Verificator): Task {task.id} artifacts verified")
+                        else:
+                            logger.warning(
+                                f"Retroactive check (Verificator): Task {task.id} missing artifacts: {missing}"
+                            )
+                            if recommendation == "re-run":
+                                from memory.short_term import TaskStatus
+                                await self.memory.short_term.update_task_status(
+                                    task.id,
+                                    TaskStatus.FAILED,
+                                    error=f"Retroactive artifact check failed: missing {missing}"
+                                )
+                            else:
+                                # Manual review or accept - log but don't fail
+                                await self.memory.log_activity(
+                                    source="heartbeat",
+                                    action="artifact_check_needs_review",
+                                    details={
+                                        "task_id": task.id,
+                                        "missing": missing,
+                                        "recommendation": recommendation
+                                    }
+                                )
+                        continue
+                    except Exception as e:
+                        logger.warning(f"Verificator audit failed, using fallback: {e}")
+
+                # Fallback: Simple file existence check
+                missing = []
+                for artifact in task.expected_artifacts:
+                    if artifact.startswith(("GET ", "POST ", "PUT ", "PATCH ", "DELETE ")):
+                        # Endpoint - check for corresponding file
+                        endpoint_parts = artifact.split()
+                        if len(endpoint_parts) >= 2:
+                            resource = endpoint_parts[1].rstrip('/').split('/')[-1]
+                            if resource:
+                                possible_files = [
+                                    Path(project_path) / "app" / "api" / "v1" / "endpoints" / f"{resource}.py",
+                                    Path(project_path) / "app" / "routes" / f"{resource}.py",
+                                ]
+                                if not any(f.exists() for f in possible_files):
+                                    missing.append(artifact)
+                    else:
+                        # File path
+                        if artifact.startswith("/"):
+                            artifact_path = Path(artifact)
+                        else:
+                            artifact_path = Path(project_path) / artifact
+
+                        if not artifact_path.exists():
+                            missing.append(artifact)
+
+                if missing:
+                    # Artifacts missing - mark task as failed so it can be re-done
+                    logger.warning(
+                        f"Retroactive check: Task {task.id} ({task.title}) missing artifacts: {missing}"
+                    )
+                    from memory.short_term import TaskStatus
+                    await self.memory.short_term.update_task_status(
+                        task.id,
+                        TaskStatus.FAILED,
+                        error=f"Retroactive artifact check failed: missing {missing}"
+                    )
+                else:
+                    # All artifacts present - mark as verified
+                    await self.memory.short_term.mark_artifacts_verified(task.id, True)
+                    logger.info(f"Retroactive check: Task {task.id} artifacts verified")
+
+        except Exception as e:
+            logger.error(f"Error in retroactive artifact check: {e}")
+
     # =========================================================================
     # OBJECTIVE ANALYSIS (Claude-Powered)
     # =========================================================================
@@ -205,6 +315,14 @@ class HeartbeatAgent:
         if not project_path:
             logger.warning(f"No project found for objective {objective.id}")
             return
+
+        # =================================================================
+        # RETROACTIVE ARTIFACT CHECK
+        # =================================================================
+        # Check completed tasks that claim to have created artifacts but
+        # haven't been verified. Mark them as failed if artifacts are missing.
+        # This catches tasks from before artifact verification was implemented.
+        await self._retroactive_artifact_check(objective.id, project_path)
 
         # Load project state
         state = await self.state_manager.get_state(project_path)
@@ -254,19 +372,86 @@ class HeartbeatAgent:
             await self._check_completion_gate(objective, project_path, state)
 
     async def _find_project_for_objective(self, objective) -> Optional[str]:
-        """Find the project path associated with an objective."""
-        # Try to extract from objective content
+        """
+        Find the project path associated with an objective.
+
+        Uses multiple strategies with priority:
+        1. Explicit path in objective content (/workspace/xxx)
+        2. Explicit path in objective metadata
+        3. Project name matching from objective keywords
+        4. Verificator-based intelligent matching (Claude-powered)
+        5. Path from associated tasks
+        6. Most recently modified project (fallback)
+        """
+        objective_lower = objective.content.lower()
+
+        # Priority 1: Explicit path in objective content
         path_match = re.search(r'/workspace/([\w\-]+)', objective.content)
         if path_match:
             project_path = f"/workspace/{path_match.group(1)}"
             if Path(project_path).exists():
                 return project_path
 
-        # Try metadata
+        # Priority 2: Metadata
         if objective.metadata and 'project_path' in objective.metadata:
             return objective.metadata['project_path']
 
-        # Look for tasks associated with this objective
+        # Priority 3: Project name matching from objective keywords
+        # Look for project names that match common patterns
+        available_projects = []
+        if self.workspace.exists():
+            available_projects = [
+                p for p in self.workspace.iterdir()
+                if p.is_dir() and not p.name.startswith('.')
+                and ((p / "package.json").exists() or (p / "requirements.txt").exists() or (p / ".clopus").exists())
+            ]
+
+        for project in available_projects:
+            project_name = project.name.lower()
+
+            # Check for direct name mention
+            if project_name in objective_lower:
+                logger.info(f"Matched project '{project.name}' from objective content")
+                return str(project)
+
+            # Check for common patterns based on project type indicators
+            # Frontend patterns
+            if any(x in objective_lower for x in ['react', 'frontend', 'web app', 'dashboard', 'ui']):
+                if any(x in project_name for x in ['web', 'frontend', 'app', 'ui', 'client']):
+                    if 'api' not in project_name and 'backend' not in project_name:
+                        logger.info(f"Matched frontend project '{project.name}' from objective keywords")
+                        return str(project)
+
+            # Backend patterns
+            if any(x in objective_lower for x in ['fastapi', 'backend', 'api server', 'rest api']):
+                if any(x in project_name for x in ['api', 'backend', 'server', 'service']):
+                    logger.info(f"Matched backend project '{project.name}' from objective keywords")
+                    return str(project)
+
+        # Priority 4: Verificator-based intelligent matching
+        if self.verificator_client and available_projects:
+            try:
+                project_info = [
+                    {
+                        "path": str(p),
+                        "name": p.name,
+                        "has_package_json": (p / "package.json").exists(),
+                        "has_requirements": (p / "requirements.txt").exists(),
+                        "keywords": self._extract_project_keywords(p)
+                    }
+                    for p in available_projects
+                ]
+                matched_path, confidence = await self.verificator_client.match_project(
+                    objective_content=objective.content,
+                    available_projects=project_info
+                )
+                if matched_path and confidence > 0.6:
+                    logger.info(f"Verificator matched project: {matched_path} (confidence: {confidence})")
+                    return matched_path
+            except Exception as e:
+                logger.debug(f"Verificator project matching failed: {e}")
+
+        # Priority 5: Look in task descriptions
         tasks = await self.memory.short_term.get_tasks_for_objective(objective.id)
         for task in tasks:
             if task.description:
@@ -276,18 +461,49 @@ class HeartbeatAgent:
                     if Path(project_path).exists():
                         return project_path
 
-        # Find most recently modified project
-        if self.workspace.exists():
-            projects = [
-                p for p in self.workspace.iterdir()
-                if p.is_dir() and not p.name.startswith('.')
-                and ((p / "package.json").exists() or (p / "requirements.txt").exists())
-            ]
-            if projects:
-                projects.sort(key=lambda p: p.stat().st_mtime, reverse=True)
-                return str(projects[0])
+        # Priority 6: Fallback - Most recently modified project
+        if available_projects:
+            available_projects.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+            logger.warning(
+                f"Using fallback project detection (most recent): {available_projects[0].name}"
+            )
+            return str(available_projects[0])
 
         return None
+
+    def _extract_project_keywords(self, project_path: Path) -> List[str]:
+        """Extract keywords from a project for matching purposes."""
+        keywords = []
+
+        # From package.json
+        package_json = project_path / "package.json"
+        if package_json.exists():
+            try:
+                import json
+                data = json.loads(package_json.read_text())
+                if "name" in data:
+                    keywords.append(data["name"])
+                if "keywords" in data:
+                    keywords.extend(data["keywords"])
+                if "dependencies" in data:
+                    deps = list(data["dependencies"].keys())[:5]
+                    keywords.extend(deps)
+            except Exception:
+                pass
+
+        # From requirements.txt
+        requirements = project_path / "requirements.txt"
+        if requirements.exists():
+            try:
+                lines = requirements.read_text().split('\n')[:5]
+                for line in lines:
+                    pkg = line.split('==')[0].split('>=')[0].strip()
+                    if pkg:
+                        keywords.append(pkg)
+            except Exception:
+                pass
+
+        return keywords[:10]  # Limit to avoid too much data
 
     async def _analyze_gaps_with_claude(
         self,
@@ -741,17 +957,100 @@ Please implement this requirement and ensure it passes verification.
                     'worker_role': self._get_worker_role_for_category(req.category)
                 })
 
-        # Check for existing tasks to avoid duplicates
-        existing_tasks = await self.memory.short_term.get_tasks_for_objective(objective.id)
-        existing_titles = {t.title for t in existing_tasks}
+        # =================================================================
+        # SMART TASK DEDUPLICATION
+        # =================================================================
+        # Key principle: Don't block re-creation of tasks for UNMET requirements
+        # just because a previous attempt was marked "completed" but didn't
+        # actually create the expected artifact.
+
+        # Get all pending/assigned tasks globally (these are actively being worked on)
+        all_pending = await self.memory.short_term.get_pending_tasks()
+
+        # Get objective tasks, but only consider completed tasks if they have
+        # verified artifacts - this prevents blocking re-creation of failed work
+        objective_tasks = await self.memory.short_term.get_tasks_for_objective(objective.id)
+
+        # Build set of titles we should NOT duplicate
+        existing_titles = set()
+
+        # All pending/assigned tasks block duplication (work in progress)
+        for t in all_pending:
+            existing_titles.add(t.title.lower())
+
+        # For objective tasks, only block on VERIFIED completed tasks
+        # Unverified completed tasks should NOT block - they claimed completion
+        # but didn't actually deliver the artifact
+        for t in objective_tasks:
+            status_val = t.status.value if hasattr(t.status, 'value') else str(t.status)
+            if status_val in ('pending', 'assigned', 'in_progress'):
+                existing_titles.add(t.title.lower())
+            elif status_val == 'completed':
+                # Only block if artifacts were verified (or no artifacts expected)
+                if t.artifacts_verified or not t.expected_artifacts:
+                    existing_titles.add(t.title.lower())
+                else:
+                    # Completed but unverified - don't block, log warning
+                    logger.warning(
+                        f"Ignoring unverified completed task for dedup: {t.title}"
+                    )
+
+        # Helper function for fuzzy title matching (with semantic fallback via verificator)
+        async def is_duplicate(new_title: str, new_description: str = "") -> bool:
+            new_lower = new_title.lower()
+            # Extract key terms (remove common prefixes)
+            new_key = new_lower.replace('implement:', '').replace('implement ', '').strip()
+            new_key = new_key.replace('write ', '').replace('create ', '').replace('add ', '').strip()
+
+            for existing in existing_titles:
+                # Direct match
+                if new_lower == existing:
+                    return True
+                # Substring match (either direction)
+                if new_key in existing or existing in new_lower:
+                    return True
+                # Key term overlap (at least 60% of words match)
+                new_words = set(new_key.split())
+                existing_words = set(existing.split())
+                if new_words and existing_words:
+                    overlap = len(new_words & existing_words)
+                    if overlap >= 0.6 * min(len(new_words), len(existing_words)):
+                        return True
+
+            # If no word-based match, try semantic check via verificator (for edge cases)
+            if self.verificator_client and new_description:
+                try:
+                    # Check against the most similar-looking existing tasks
+                    for existing in list(existing_titles)[:5]:  # Limit to avoid too many checks
+                        is_dup, confidence = await self.verificator_client.check_duplicate(
+                            task1_title=new_title,
+                            task1_description=new_description,
+                            task2_title=existing,
+                            task2_description=""  # We don't have description for existing
+                        )
+                        if is_dup and confidence > 0.7:
+                            logger.debug(f"Semantic duplicate found: '{new_title}' ~ '{existing}' (conf: {confidence})")
+                            return True
+                except Exception as e:
+                    logger.debug(f"Semantic duplicate check failed: {e}")
+
+            return False
 
         tasks_to_create = []
         for task in gap_analysis.suggested_tasks:
-            # Skip if similar task exists
-            if any(task['title'].lower() in t.lower() or t.lower() in task['title'].lower()
-                   for t in existing_titles):
-                continue
-            tasks_to_create.append(task)
+            # Use async duplicate check with semantic verification
+            is_dup = await is_duplicate(task['title'], task.get('description', ''))
+            if not is_dup:
+                # Use verificator to specify artifacts, falling back to regex inference
+                expected_artifacts = await self._infer_expected_artifacts(
+                    task.get('title', ''),
+                    task.get('description', ''),
+                    gap_analysis.project_path
+                )
+                task['expected_artifacts'] = expected_artifacts
+                tasks_to_create.append(task)
+            else:
+                logger.debug(f"Skipping duplicate task: {task['title']}")
 
         if tasks_to_create:
             logger.info(f"Spawning {len(tasks_to_create)} remediation tasks for objective {objective.id}")
@@ -782,6 +1081,85 @@ Please implement this requirement and ensure it passes verification.
             'review': 'reviewer'
         }
         return mapping.get(category.lower(), 'coder')
+
+    async def _infer_expected_artifacts(
+        self,
+        title: str,
+        description: str,
+        project_path: str
+    ) -> list:
+        """
+        Infer expected artifacts from task title and description.
+
+        Uses the Verificator (Worker 8) for intelligent artifact specification
+        when available, falling back to regex-based inference.
+
+        This enables artifact verification - tasks that claim to create files
+        must actually create them.
+        """
+        # Try using verificator for intelligent artifact specification
+        if self.verificator_client:
+            try:
+                artifacts = await self.verificator_client.specify_artifacts(
+                    task_title=title,
+                    task_description=description,
+                    project_path=project_path
+                )
+                if artifacts:
+                    logger.info(f"Verificator specified {len(artifacts)} artifacts for '{title[:50]}'")
+                    return artifacts
+            except Exception as e:
+                logger.debug(f"Verificator artifact specification failed: {e}")
+
+        # Fallback: Regex-based inference
+        import re
+        artifacts = []
+
+        combined = f"{title} {description}".lower()
+
+        # Pattern: "Create/Implement X model" -> app/models/x.py
+        model_match = re.search(r'(?:create|implement|add)\s+(\w+)\s+(?:sqlalchemy\s+)?model', combined)
+        if model_match:
+            model_name = model_match.group(1).lower()
+            artifacts.append(f"app/models/{model_name}.py")
+
+        # Pattern: "Create/Implement X endpoint(s)" -> app/api/v1/endpoints/x.py
+        endpoint_match = re.search(r'(?:create|implement|add)\s+(\w+)\s+(?:crud\s+)?endpoint', combined)
+        if endpoint_match:
+            endpoint_name = endpoint_match.group(1).lower()
+            # Also accept plural
+            if endpoint_name.endswith('s'):
+                endpoint_name = endpoint_name[:-1]
+            artifacts.append(f"app/api/v1/endpoints/{endpoint_name}s.py")
+
+        # Pattern: "app/path/to/file.py" in description -> exact file
+        file_refs = re.findall(r'(?:create|implement|add|in|at)\s+[`\'"]*([a-zA-Z0-9_/]+\.(?:py|ts|tsx|js|jsx))[`\'"]*', combined)
+        for file_ref in file_refs:
+            if file_ref not in artifacts and not file_ref.startswith('/'):
+                artifacts.append(file_ref)
+
+        # Pattern: "tests/unit/test_x.py" or "tests/e2e/test_x.py"
+        test_match = re.search(r'(?:write|create|add)\s+(?:\w+\s+)?tests?\s+for\s+(\w+)', combined)
+        if test_match:
+            test_subject = test_match.group(1).lower()
+            if 'unit' in combined:
+                artifacts.append(f"tests/unit/test_{test_subject}.py")
+            elif 'e2e' in combined or 'end-to-end' in combined:
+                artifacts.append(f"tests/e2e/test_{test_subject}.py")
+            elif 'integration' in combined:
+                artifacts.append(f"tests/integration/test_{test_subject}.py")
+
+        # Pattern: explicit file paths mentioned
+        explicit_files = re.findall(r'[`\'"](/?\w+(?:/\w+)*\.\w+)[`\'"]', description)
+        for f in explicit_files:
+            if f not in artifacts:
+                artifacts.append(f.lstrip('/'))
+
+        # Log what we inferred
+        if artifacts:
+            logger.debug(f"Inferred artifacts (regex) for '{title[:50]}': {artifacts}")
+
+        return artifacts
 
     # =========================================================================
     # INTEGRATION TESTING

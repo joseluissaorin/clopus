@@ -52,15 +52,19 @@ USER INPUT (CLI/File/Webhook)
 └─────────────────────────────────────────────────────────┘
          │
          ▼
-┌───────────────────────────────────────────────────────────────────┐
-│                WORKER POOL (6 Claude Code Instances)               │
-│  ┌─────────┐ ┌─────────┐ ┌─────────┐ ┌─────────┐ ┌─────────┐ ┌─────────┐
-│  │ CODER   │ │ TESTER  │ │REVIEWER │ │RESEARCH │ │DEBUGGER │ │DESIGNER │
-│  │         │ │         │ │         │ │         │ │         │ │         │
-│  │ Writes  │ │ Tests   │ │ Reviews │ │ Looks   │ │ Fixes   │ │ Creates │
-│  │ code    │ │ + E2E   │ │ code    │ │ things  │ │ issues  │ │ design  │
-│  └─────────┘ └─────────┘ └─────────┘ └─────────┘ └─────────┘ └─────────┘
-└───────────────────────────────────────────────────────────────────┘
+┌───────────────────────────────────────────────────────────────────────────────────┐
+│                     WORKER POOL (8 Claude Code Instances)                          │
+│  ┌─────────┐ ┌─────────┐ ┌─────────┐ ┌─────────┐ ┌─────────┐ ┌─────────┐          │
+│  │ CODER   │ │ TESTER  │ │REVIEWER │ │RESEARCH │ │DEBUGGER │ │DESIGNER │          │
+│  │         │ │         │ │         │ │         │ │         │ │         │          │
+│  │ Writes  │ │ Tests   │ │ Reviews │ │ Looks   │ │ Fixes   │ │ Creates │          │
+│  │ code    │ │ + E2E   │ │ code    │ │ things  │ │ issues  │ │ design  │          │
+│  └─────────┘ └─────────┘ └─────────┘ └─────────┘ └─────────┘ └─────────┘          │
+│  ┌─────────────────────────┐ ┌─────────────────────────────┐                      │
+│  │ HEARTBEAT (Worker 7)    │ │ VERIFICATOR (Worker 8)      │  ← Reserved Workers  │
+│  │ Completion Guardian     │ │ Intelligent Verification    │                      │
+│  └─────────────────────────┘ └─────────────────────────────┘                      │
+└───────────────────────────────────────────────────────────────────────────────────┘
          │
          ▼
 ┌─────────────────────────────────────────────────────────┐
@@ -214,6 +218,53 @@ heartbeat:
 | `orchestrator/heartbeat_agent.py` | HeartbeatAgent class |
 | `orchestrator/config.py` | HeartbeatConfig, CompletionGateConfig |
 | `config.yaml` | Heartbeat configuration |
+
+---
+
+## VERIFICATOR WORKER (Intelligent Verification)
+
+The Verificator (Worker 8) is a dedicated Claude Code instance that uses AI intelligence to replace regex/heuristic-based approaches throughout CLOPUS.
+
+### What It Does
+
+| Task Type | Description |
+|-----------|-------------|
+| **SPECIFY_ARTIFACTS** | Intelligently determines what files/endpoints a task should create |
+| **VERIFY_COMPLETION** | Semantically verifies if a completed task actually created its artifacts |
+| **CHECK_DUPLICATE** | Detects semantically duplicate tasks (not just word matching) |
+| **MATCH_PROJECT** | Matches objectives to correct projects using content analysis |
+| **AUDIT_COMPLETED** | Retroactively audits old completed tasks for missing artifacts |
+| **SEMANTIC_CHECK** | Checks if task output matches requirements semantically |
+
+### Why It Exists
+
+Before the Verificator, CLOPUS used regex patterns to:
+- Infer expected artifacts from task titles (fragile)
+- Detect duplicate tasks via word overlap (missed semantic duplicates)
+- Match objectives to projects via keyword matching (inaccurate)
+
+**The Problem**: Tasks could be marked "completed" without actually creating their files, and deduplication would block re-creation. This caused gaps like missing `edges.py` despite "Create Edge endpoints" being marked complete.
+
+**The Solution**: Use Claude's intelligence to understand task semantics rather than relying on pattern matching.
+
+### Integration Points
+
+1. **Task Assignment**: Before a task is dispatched, Verificator specifies expected artifacts
+2. **Task Completion**: After worker reports success, Verificator verifies artifacts exist
+3. **Heartbeat Cycle**: Retroactively audits unverified completed tasks
+4. **Task Spawning**: Uses semantic deduplication to prevent true duplicates while allowing re-attempts of failed work
+
+### Files
+
+| File | Purpose |
+|------|---------|
+| `orchestrator/verificator_client.py` | High-level client for orchestrator |
+| `orchestrator/worker_pool.py:verificator` | Worker role definition and prompts |
+| `docker-compose.yml:worker-8` | Container configuration |
+
+### Reserved Worker
+
+The Verificator is a **reserved worker** - it is never assigned regular tasks by the task planner. It only handles verification requests from the orchestrator and heartbeat agent.
 
 ---
 

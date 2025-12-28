@@ -167,7 +167,8 @@ class MemoryClient:
                 description=task_def.get("description"),
                 priority=task_def.get("priority", 5),
                 dependencies=task_def.get("dependencies", []),
-                worker_role=task_def.get("worker_role")
+                worker_role=task_def.get("worker_role"),
+                expected_artifacts=task_def.get("expected_artifacts", [])
             )
             created_tasks.append(task)
             existing_titles.add(title)  # Prevent duplicates within same batch

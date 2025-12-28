@@ -342,19 +342,40 @@ async def create_resumption_objective(
     """
     Create an objective for resuming an incomplete project.
     Returns the objective ID.
+
+    IMPORTANT: Checks for existing in_progress objectives for this project
+    to prevent duplicate objectives from being created.
     """
+    # First, check if the stored objective_id still exists
     if state.objective_id:
-        # Check if objective still exists
         try:
             existing = await memory_client.short_term.get_objective(state.objective_id)
-            if existing:
+            if existing and existing.status.value in ('pending', 'planning', 'in_progress'):
                 # Re-queue existing objective
                 await memory_client.requeue_objective(state.objective_id)
                 return state.objective_id
         except Exception:
             pass
 
-    # Create new resumption objective
+    # =================================================================
+    # CHECK FOR ANY EXISTING IN_PROGRESS OBJECTIVE FOR THIS PROJECT
+    # =================================================================
+    # This prevents duplicate resumption objectives when the orchestrator
+    # restarts multiple times or when heartbeat creates objectives.
+    try:
+        from memory.short_term import ObjectiveStatus
+        in_progress = await memory_client.short_term.get_objectives_by_status(
+            ObjectiveStatus.IN_PROGRESS
+        )
+        for obj in in_progress:
+            # Check if this objective is for the same project
+            if state.project_path in obj.content or state.project_name in obj.content:
+                logger.info(f"Found existing in_progress objective {obj.id} for {state.project_name}, skipping creation")
+                return obj.id
+    except Exception as e:
+        logger.warning(f"Error checking existing objectives: {e}")
+
+    # Create new resumption objective only if none exists
     content = f"""[RESUMPTION] Continue work on: {state.project_name}
 
 Project Path: {state.project_path}

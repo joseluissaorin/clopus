@@ -36,6 +36,7 @@ from .project_state import get_state_manager, ProjectStateManager, ProjectState
 from .project_resumption import get_resumption_generator, create_resumption_objective
 from .shared_context import get_shared_context, SharedContextManager
 from .heartbeat_agent import HeartbeatAgent, get_heartbeat_agent, set_heartbeat_worker_pool
+from .verificator_client import VerificatorClient, get_verificator_client, set_verificator_client
 from validation.pipeline import ValidationPipeline
 
 # Configure logging
@@ -75,6 +76,9 @@ class Orchestrator:
 
         # Heartbeat agent (completion guardian)
         self.heartbeat_agent: Optional[HeartbeatAgent] = None
+
+        # Verificator client (intelligent verification using Worker 8)
+        self.verificator_client: Optional[VerificatorClient] = None
 
     async def initialize(self) -> None:
         """Initialize all components."""
@@ -116,6 +120,11 @@ class Orchestrator:
         )
         await self.worker_pool.initialize()
         logger.info("Worker pool initialized")
+
+        # Initialize verificator client (uses Worker 8 for intelligent verification)
+        self.verificator_client = VerificatorClient(self.worker_pool)
+        set_verificator_client(self.verificator_client)
+        logger.info("Verificator client initialized (Worker 8)")
 
         # Initialize status reporter
         self.status_reporter = StatusReporter(
@@ -551,6 +560,30 @@ class Orchestrator:
             worker = await self.memory.get_idle_worker(task.worker_role)
 
             if worker:
+                # Determine correct project path for this task
+                project_path = self._get_project_path_for_task(task)
+
+                # =====================================================================
+                # USE VERIFICATOR TO SPECIFY EXPECTED ARTIFACTS (if not already set)
+                # =====================================================================
+                if not task.expected_artifacts and self.verificator_client:
+                    try:
+                        artifacts = await self.verificator_client.specify_artifacts(
+                            task_title=task.title,
+                            task_description=task.description or "",
+                            project_path=project_path
+                        )
+                        if artifacts:
+                            # Update task with expected artifacts
+                            await self.memory.short_term.update_expected_artifacts(
+                                task.id, artifacts
+                            )
+                            logger.info(
+                                f"Verificator specified {len(artifacts)} expected artifacts for task: {task.title}"
+                            )
+                    except Exception as e:
+                        logger.warning(f"Could not specify artifacts for task: {e}")
+
                 # Assign task
                 await self.memory.assign_task_to_worker(
                     task.id,
@@ -577,9 +610,6 @@ class Orchestrator:
                     )
                 except Exception:
                     pass
-
-                # Determine correct project path for this task
-                project_path = self._get_project_path_for_task(task)
 
                 # Dispatch to worker with correct cwd and context
                 await self.worker_pool.dispatch_task(
@@ -686,6 +716,22 @@ class Orchestrator:
                     if task_id:
                         # Get task details for validation BEFORE marking complete
                         task = await self.memory.short_term.get_task(task_id)
+
+                        # =====================================================================
+                        # ARTIFACT VERIFICATION - Check expected files were created
+                        # =====================================================================
+                        artifacts_verified = True
+                        if task and success and task.expected_artifacts:
+                            artifacts_verified, missing = await self._verify_artifacts(task)
+                            if not artifacts_verified:
+                                success = False
+                                logger.error(
+                                    f"Task {task_id} FAILED: Missing artifacts: {missing}"
+                                )
+                            else:
+                                # Mark artifacts as verified in DB
+                                await self.memory.short_term.mark_artifacts_verified(task_id, True)
+                                logger.info(f"Task {task_id}: All {len(task.expected_artifacts)} artifacts verified")
 
                         # =====================================================================
                         # MANDATORY VALIDATION - Tasks FAIL if validation fails
@@ -911,6 +957,100 @@ class Orchestrator:
             project_path = "/workspace"
 
         return project_path
+
+    # =========================================================================
+    # ARTIFACT VERIFICATION
+    # =========================================================================
+
+    async def _verify_artifacts(self, task) -> tuple[bool, list]:
+        """
+        Verify that expected artifacts from a task actually exist.
+
+        Uses the Verificator (Worker 8) for intelligent verification when available,
+        with fallback to simple file existence checks.
+
+        Returns:
+            tuple: (all_verified: bool, missing_artifacts: list)
+        """
+        if not task.expected_artifacts:
+            return True, []
+
+        project_path = self._get_project_path_for_task(task)
+
+        # Try using the verificator client for intelligent verification
+        if self.verificator_client:
+            try:
+                verified, missing, found = await self.verificator_client.verify_completion(
+                    task_title=task.title,
+                    task_description=task.description or "",
+                    expected_artifacts=task.expected_artifacts,
+                    project_path=project_path,
+                    task_result=task.result if hasattr(task, 'result') else None
+                )
+
+                if not verified:
+                    logger.error(
+                        f"Task {task.id} ({task.title}): Verificator found {len(missing)} missing artifacts: {missing}"
+                    )
+                else:
+                    logger.info(
+                        f"Task {task.id}: Verificator confirmed {len(found)} artifacts present"
+                    )
+
+                return verified, missing
+
+            except Exception as e:
+                logger.warning(f"Verificator failed, falling back to file check: {e}")
+
+        # Fallback: Simple file existence check
+        missing = []
+
+        for artifact in task.expected_artifacts:
+            # Artifact can be:
+            # - Relative path: "app/models/edge.py" -> resolve against project path
+            # - Absolute path: "/workspace/nexus-api/app/models/edge.py"
+            # - Endpoint: "GET /api/v1/edges" -> special handling
+
+            if artifact.startswith(("GET ", "POST ", "PUT ", "PATCH ", "DELETE ")):
+                # This is an endpoint - we'd need to start the server to verify
+                # For now, check if the corresponding file might exist
+                # e.g., "GET /api/v1/edges" -> check for edges.py in endpoints
+                endpoint_parts = artifact.split()
+                if len(endpoint_parts) >= 2:
+                    path = endpoint_parts[1]  # e.g., "/api/v1/edges"
+                    # Extract the resource name (last part of path)
+                    resource = path.rstrip('/').split('/')[-1]
+                    if resource:
+                        # Check common patterns for endpoint files
+                        possible_files = [
+                            Path(project_path) / "app" / "api" / "v1" / "endpoints" / f"{resource}.py",
+                            Path(project_path) / "app" / "routes" / f"{resource}.py",
+                            Path(project_path) / "src" / "routes" / f"{resource}.py",
+                            Path(project_path) / "api" / f"{resource}.py",
+                        ]
+                        if not any(f.exists() for f in possible_files):
+                            missing.append(artifact)
+                            logger.warning(f"Endpoint artifact not found: {artifact}")
+            else:
+                # This is a file path
+                if artifact.startswith("/"):
+                    # Absolute path
+                    artifact_path = Path(artifact)
+                else:
+                    # Relative path - resolve against project
+                    artifact_path = Path(project_path) / artifact
+
+                if not artifact_path.exists():
+                    missing.append(artifact)
+                    logger.warning(f"File artifact not found: {artifact_path}")
+
+        if missing:
+            logger.error(
+                f"Task {task.id} ({task.title}): {len(missing)} of {len(task.expected_artifacts)} artifacts missing"
+            )
+            return False, missing
+
+        return True, []
 
     # =========================================================================
     # VALIDATION & SELF-GENERATING ECOSYSTEM

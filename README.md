@@ -22,7 +22,7 @@
 
 **CLOPUS** (Claude-based Locally Orchestrated Production Unified System) is a fully autonomous development system that orchestrates multiple Claude Code instances to build complete software projects with minimal human intervention.
 
-Give it an objective like *"Build a todo app with React and FastAPI"* and watch as 6 specialized AI workers collaborate to design, implement, test, and validate production-ready code.
+Give it an objective like *"Build a todo app with React and FastAPI"* and watch as 8 specialized AI workers collaborate to design, implement, test, and validate production-ready code.
 
 ## Table of Contents
 
@@ -36,6 +36,7 @@ Give it an objective like *"Build a todo app with React and FastAPI"* and watch 
 - [Project Continuity](#project-continuity)
 - [Multi-Project Support](#multi-project-support)
 - [Heartbeat Agent](#heartbeat-agent)
+- [Verificator Worker](#verificator-worker)
 - [Validation Pipeline](#validation-pipeline)
 - [Memory System](#memory-system)
 - [Self-Generating Ecosystem](#self-generating-ecosystem)
@@ -58,13 +59,14 @@ Traditional AI coding assistants require constant human guidance. CLOPUS takes a
 | Traditional AI Coding | CLOPUS |
 |----------------------|--------|
 | Single conversation context | Persistent memory across sessions |
-| One task at a time | 6 parallel specialized workers |
+| One task at a time | 8 parallel specialized workers |
 | Manual testing | 8-stage automated validation |
 | No learning | Learns from every project |
 | Basic code generation | Full project scaffolding + deployment |
 | Asks for everything | Only asks when genuinely uncertain |
 | No design consistency | Designer agent creates unified branding |
 | Loses progress on restart | Project continuity system resumes work |
+| No verification | Verificator ensures tasks actually complete |
 
 ### Key Differentiators
 
@@ -77,10 +79,11 @@ Traditional AI coding assistants require constant human guidance. CLOPUS takes a
 ## Features
 
 ### Multi-Agent Architecture
-- **6 Parallel Workers**: Specialized roles (Coder, Tester, Reviewer, Researcher, Debugger, Designer) work concurrently
+- **8 Parallel Workers**: Specialized roles (Coder, Tester, Reviewer, Researcher, Debugger, Designer) + 2 reserved workers (Heartbeat, Verificator)
 - **Intelligent Task Distribution**: Orchestrator assigns tasks based on worker specialization and workload
 - **File-Based IPC**: Simple, debuggable communication via JSON files
 - **Designer Agent**: Creates comprehensive branding and design systems before implementation
+- **Verificator Worker**: Uses Claude's intelligence to verify task completions and detect semantic duplicates
 
 ### Project Continuity
 - **Automatic Resumption**: Incomplete projects are automatically resumed on restart
@@ -328,6 +331,14 @@ Done! Project available at: /workspace/projects/blog-nextjs
 │  Claude Code  │       │  Claude Code  │       │  Claude Code  │
 └───────────────┘       └───────────────┘       └───────────────┘
                                 │
+                ┌───────────────┴───────────────┐
+                ▼                               ▼
+┌────────────────────────────┐   ┌────────────────────────────┐
+│       Worker 7             │   │       Worker 8             │
+│   (Heartbeat - Reserved)   │   │  (Verificator - Reserved)  │
+│    Completion Guardian     │   │   Intelligent Verification │
+└────────────────────────────┘   └────────────────────────────┘
+                                │
         ┌───────────────────────┼───────────────────────┐
         ▼                       ▼                       ▼
 ┌───────────────┐       ┌───────────────┐       ┌───────────────┐
@@ -341,6 +352,7 @@ Done! Project available at: /workspace/projects/blog-nextjs
 **Tier 1 (Always Running)**:
 - Orchestrator
 - 6 Claude Code Workers (Coder, Tester, Reviewer, Researcher, Debugger, Designer)
+- 2 Reserved Workers (Heartbeat, Verificator) - not assigned regular tasks
 - SQLite
 - ChromaDB
 
@@ -366,6 +378,8 @@ Each worker runs a full Claude Code instance with role-specific system prompts a
 | Worker 4 | **Researcher** | Documentation, API research, solutions | web-search, documentation-reader |
 | Worker 5 | **Debugger** | Bug fixing, performance, troubleshooting | debugging, performance-profiling |
 | Worker 6 | **Designer** | Branding, design systems, visual consistency | design-system, ui-ux |
+| Worker 7 | **Heartbeat** *(reserved)* | Gap analysis, completion verification | objective-analysis, integration-testing |
+| Worker 8 | **Verificator** *(reserved)* | Intelligent verification, deduplication | artifact-verification, semantic-analysis |
 
 Workers communicate via file-based IPC:
 - `ipc/tasks/{worker_id}/pending.json` - Tasks for worker
@@ -592,6 +606,47 @@ heartbeat:
     require_integration_tests: true
     allowed_failed_tasks: 0
 ```
+
+## Verificator Worker
+
+The Verificator (Worker 8) is a dedicated Claude Code instance that uses AI intelligence to replace regex/heuristic-based approaches throughout CLOPUS.
+
+### Why It Exists
+
+Before the Verificator, CLOPUS used regex patterns to:
+- Infer expected artifacts from task titles (fragile)
+- Detect duplicate tasks via word overlap (missed semantic duplicates)
+- Match objectives to projects via keyword matching (inaccurate)
+
+**The Problem**: Tasks could be marked "completed" without actually creating their files, and deduplication would block re-creation. This caused gaps like missing `edges.py` despite "Create Edge endpoints" being marked complete.
+
+**The Solution**: Use Claude's intelligence to understand task semantics rather than relying on pattern matching.
+
+### Task Types
+
+| Task Type | Description |
+|-----------|-------------|
+| **SPECIFY_ARTIFACTS** | Determines what files/endpoints a task should create |
+| **VERIFY_COMPLETION** | Verifies if a completed task actually created its artifacts |
+| **CHECK_DUPLICATE** | Detects semantically duplicate tasks (not just word matching) |
+| **MATCH_PROJECT** | Matches objectives to correct projects using content analysis |
+| **AUDIT_COMPLETED** | Retroactively audits old completed tasks for missing artifacts |
+| **SEMANTIC_CHECK** | Checks if task output matches requirements semantically |
+
+### Integration Points
+
+1. **Task Assignment**: Before a task is dispatched, Verificator specifies expected artifacts
+2. **Task Completion**: After worker reports success, Verificator verifies artifacts exist
+3. **Heartbeat Cycle**: Retroactively audits unverified completed tasks
+4. **Task Spawning**: Uses semantic deduplication to prevent true duplicates while allowing re-attempts of failed work
+
+### Backwards Compatibility
+
+The Verificator gracefully handles existing tasks:
+- Tasks without `expected_artifacts` are marked as verified (no artifacts to check)
+- All verification methods have regex-based fallbacks when Verificator is unavailable
+- Database migrations automatically add new columns to existing databases
+- Existing completed tasks are retroactively audited during heartbeat cycles
 
 ## Validation Pipeline
 
@@ -1015,6 +1070,7 @@ docker-compose build
 ### v3.1 (Next)
 - [ ] Web UI dashboard
 - [x] Multi-project management *(implemented)*
+- [x] Verificator Worker *(implemented)* - Intelligent artifact verification and semantic deduplication
 - [ ] Cost tracking and budgets
 - [ ] Custom worker roles
 

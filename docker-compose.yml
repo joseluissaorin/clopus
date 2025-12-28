@@ -182,6 +182,25 @@ services:
       HEARTBEAT_WORKER: "true"
       ANALYSIS_TIMEOUT: 120
 
+  # Dedicated Verificator Worker (Intelligent Verification)
+  # This worker uses Claude's intelligence to:
+  # - Specify expected artifacts for tasks
+  # - Verify task completions semantically
+  # - Detect duplicate tasks by meaning
+  # - Match objectives to projects
+  # - Audit completed tasks for missing artifacts
+  worker-8:
+    <<: *worker-common
+    container_name: clopus-worker-8
+    environment:
+      <<: *common-env
+      WORKER_ID: 8
+      WORKER_ROLE: verificator
+      IPC_PATH: /app/ipc
+      # Verificator-specific settings
+      VERIFICATOR_WORKER: "true"
+      VERIFICATION_TIMEOUT: 60
+
   # ===========================================================================
   # TIER 1: CORE SERVICES (Always Running)
   # ===========================================================================
