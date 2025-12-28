@@ -26,6 +26,7 @@ class PlannedTask:
     dependencies: List[str] = field(default_factory=list)
     estimated_duration: str = "medium"  # short, medium, long
     validation_required: bool = True
+    metadata: Dict[str, Any] = field(default_factory=dict)  # Task-specific metadata
 
 
 class TaskPlanner:
@@ -181,7 +182,8 @@ class TaskPlanner:
             "priority": task.priority,
             "dependencies": task.dependencies,
             "estimated_duration": task.estimated_duration,
-            "validation_required": task.validation_required
+            "validation_required": task.validation_required,
+            "metadata": task.metadata
         }
 
     def _resolve_dependencies(self, tasks: List[PlannedTask]) -> List[PlannedTask]:
@@ -429,14 +431,46 @@ Be specific with values (exact hex codes, rem values, etc).
         """Tasks for an API project."""
         tasks = []
 
+        # Database requirements warning to inject into all endpoint tasks
+        db_requirement_warning = """
+## CRITICAL: Database Integration Required
+
+You MUST use SQLAlchemy with the PostgreSQL database. DO NOT use in-memory storage.
+
+### Required Pattern:
+```python
+from sqlalchemy.orm import Session
+from app.db.session import get_db
+from app.models.{resource} import {Resource}
+
+@router.post("", response_model={Resource}Response)
+async def create_{resource}(
+    data: {Resource}Create,
+    db: Session = Depends(get_db)  # <-- REQUIRED
+):
+    db_obj = {Resource}(**data.model_dump())
+    db.add(db_obj)
+    db.commit()
+    db.refresh(db_obj)
+    return db_obj
+```
+
+### FORBIDDEN Patterns (will be REJECTED):
+- `_db: dict = {}`  # In-memory storage
+- `_storage = {}`   # In-memory storage
+- Missing `Depends(get_db)` in endpoints
+- Importing models but not using them
+"""
+
         setup_id = str(uuid.uuid4())
         tasks.append(PlannedTask(
             id=setup_id,
             title="API project setup",
-            description="Initialize FastAPI project with dependencies and configuration",
+            description="Initialize FastAPI project with dependencies and configuration. Include SQLAlchemy, asyncpg, and alembic for database.",
             worker_role="coder",
             priority=10,
-            estimated_duration="short"
+            estimated_duration="short",
+            metadata={"database_required": True}
         ))
 
         research_id = str(uuid.uuid4())
@@ -452,34 +486,61 @@ Be specific with values (exact hex codes, rem values, etc).
         models_id = str(uuid.uuid4())
         tasks.append(PlannedTask(
             id=models_id,
-            title="Create data models",
-            description="Define Pydantic models and database schemas",
+            title="Create SQLAlchemy data models",
+            description=f"""Define SQLAlchemy ORM models in app/models/ and Pydantic schemas in app/schemas/.
+
+{db_requirement_warning}
+
+Each model MUST:
+1. Inherit from Base (SQLAlchemy declarative base)
+2. Have proper table name and columns
+3. Be exported in app/models/__init__.py
+""",
             worker_role="coder",
             priority=9,
             dependencies=[setup_id, research_id],
-            estimated_duration="medium"
+            estimated_duration="medium",
+            metadata={"database_required": True, "expected_artifacts": ["app/models/"]}
         ))
 
         db_id = str(uuid.uuid4())
         tasks.append(PlannedTask(
             id=db_id,
             title="Implement database layer",
-            description="Set up database connection and CRUD operations",
+            description="""Set up PostgreSQL database connection and session management.
+
+Create:
+1. app/db/session.py - Database engine and session factory
+2. app/db/base.py - SQLAlchemy Base class
+3. get_db() dependency function for FastAPI
+
+The database URL should come from environment variable DATABASE_URL.
+""",
             worker_role="coder",
             priority=8,
             dependencies=[models_id],
-            estimated_duration="medium"
+            estimated_duration="medium",
+            metadata={"database_required": True}
         ))
 
         endpoints_id = str(uuid.uuid4())
         tasks.append(PlannedTask(
             id=endpoints_id,
             title="Implement API endpoints",
-            description="Create all required REST endpoints with validation",
+            description=f"""Create all required REST endpoints with validation.
+
+{db_requirement_warning}
+
+EVERY endpoint that creates, reads, updates, or deletes data MUST:
+1. Have `db: Session = Depends(get_db)` in its signature
+2. Use the SQLAlchemy models from app/models/
+3. Use session.add(), session.commit(), session.query() for data operations
+""",
             worker_role="coder",
             priority=7,
             dependencies=[db_id],
-            estimated_duration="long"
+            estimated_duration="long",
+            metadata={"database_required": True}
         ))
 
         tasks.append(PlannedTask(

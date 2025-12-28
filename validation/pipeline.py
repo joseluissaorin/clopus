@@ -24,6 +24,7 @@ class ValidationStage(str, Enum):
     INTEGRATION_TESTS = "integration_tests"
     E2E_TESTS = "e2e_tests"
     SECURITY = "security"
+    ARCHITECTURE = "architecture"  # NEW: Claude-powered architecture compliance
     REVIEW = "review"
 
 
@@ -45,6 +46,7 @@ DEFAULT_STAGE_TIMEOUTS = {
     "integration_tests": 600,
     "e2e_tests": 600,
     "security": 180,
+    "architecture": 300,  # Claude-powered analysis takes time
     "review": 300
 }
 
@@ -98,7 +100,7 @@ class ValidationPipeline:
         # Import stage handlers
         from .stages import (
             syntax, lint, build, unit_tests,
-            integration_tests, e2e_tests, security, review
+            integration_tests, e2e_tests, security, architecture, review
         )
 
         self.stage_handlers = {
@@ -109,6 +111,7 @@ class ValidationPipeline:
             ValidationStage.INTEGRATION_TESTS: integration_tests.IntegrationTestValidator(),
             ValidationStage.E2E_TESTS: e2e_tests.E2ETestValidator(),
             ValidationStage.SECURITY: security.SecurityValidator(),
+            ValidationStage.ARCHITECTURE: architecture.ArchitectureValidator(worker_pool),
             ValidationStage.REVIEW: review.ReviewValidator(worker_pool),
         }
 

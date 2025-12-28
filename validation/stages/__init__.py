@@ -12,4 +12,5 @@ from . import unit_tests
 from . import integration_tests
 from . import e2e_tests
 from . import security
+from . import architecture
 from . import review
