@@ -12,9 +12,9 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  clopus-tui                    Start the TUI (light theme, websocket enabled)
-  clopus-tui --dark             Start with dark theme
-  clopus-tui --no-websocket     Start without WebSocket (uses mock data)
+  python -m tui.main              Start the TUI (light theme by default)
+  python -m tui.main --dark       Start with dark theme
+  python -m tui.main --websocket  Enable WebSocket real-time updates
 
 Keyboard shortcuts (in TUI):
   d     Dashboard
@@ -23,21 +23,28 @@ Keyboard shortcuts (in TUI):
   t     Tasks
   l     Logs
   o     Objectives
-  ?     Help
+  F1    Help
+  Ctrl+T  Toggle theme
   Ctrl+Q  Quit
         """
     )
 
     parser.add_argument(
-        "--no-websocket", "-nw",
+        "--websocket", "-ws",
         action="store_true",
-        help="Disable WebSocket real-time updates (use mock client instead)"
+        help="Enable WebSocket real-time updates"
     )
 
     parser.add_argument(
         "--dark",
         action="store_true",
         help="Start with dark theme (default is light)"
+    )
+
+    parser.add_argument(
+        "--light",
+        action="store_true",
+        help="Start with light theme (this is the default)"
     )
 
     parser.add_argument(
@@ -59,15 +66,17 @@ Keyboard shortcuts (in TUI):
         from .app import CLOPUSApp
     except ImportError:
         # Handle direct execution
-        sys.path.insert(0, str(__file__).rsplit("/", 2)[0])
+        import os
+        sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
         from tui.app import CLOPUSApp
 
-    # Default: websocket enabled, light theme
-    app = CLOPUSApp(use_websocket=not args.no_websocket)
+    # Determine theme: dark if --dark, light if --light or default
+    start_dark = args.dark and not args.light
 
-    # Default is light theme (dark=False), switch to dark if --dark flag
-    app.dark = args.dark
-
+    app = CLOPUSApp(
+        use_websocket=args.websocket,
+        start_dark=start_dark
+    )
     app.run()
 
 

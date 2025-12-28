@@ -1,9 +1,11 @@
-"""CLOPUS TUI Main Application"""
+"""CLOPUS TUI Main Application - Modern UI"""
 
 from textual.app import App, ComposeResult
 from textual.widgets import Header, Footer, Static
 from textual.binding import Binding
 from textual.screen import Screen
+from textual.design import ColorSystem
+from textual.theme import Theme
 from typing import Optional
 import asyncio
 
@@ -19,17 +21,49 @@ from .screens.questions import QuestionsScreen
 from .screens.config import ConfigScreen
 
 from .services.websocket_client import WebSocketClient, MockWebSocketClient, EventType
-from .services.notifications import NotificationService, NotificationType
-from .themes.dark import DARK_THEME
-from .themes.light import LIGHT_THEME
+from .services.notifications import NotificationService
+
+
+# Modern light theme colors
+CLOPUS_LIGHT = Theme(
+    name="clopus-light",
+    primary="#2563eb",
+    secondary="#6366f1",
+    accent="#0891b2",
+    foreground="#1e293b",
+    background="#f8fafc",
+    surface="#ffffff",
+    panel="#f1f5f9",
+    warning="#d97706",
+    error="#dc2626",
+    success="#16a34a",
+    dark=False,
+)
+
+# Modern dark theme colors
+CLOPUS_DARK = Theme(
+    name="clopus-dark",
+    primary="#3b82f6",
+    secondary="#8b5cf6",
+    accent="#22d3ee",
+    foreground="#f8fafc",
+    background="#0f172a",
+    surface="#1e293b",
+    panel="#334155",
+    warning="#f59e0b",
+    error="#ef4444",
+    success="#22c55e",
+    dark=True,
+)
 
 
 class CLOPUSApp(App):
-    """CLOPUS Terminal User Interface"""
+    """CLOPUS Terminal User Interface - Modern Design"""
 
     TITLE = "CLOPUS"
     SUB_TITLE = "Claude Orchestrated Parallel Universal System"
 
+    # Modern CSS styling
     CSS = """
     Screen {
         background: $background;
@@ -37,10 +71,143 @@ class CLOPUSApp(App):
 
     Header {
         dock: top;
+        height: 3;
+        background: $surface;
+        color: $foreground;
     }
 
     Footer {
         dock: bottom;
+        height: 1;
+        background: $surface;
+    }
+
+    /* Panel styling */
+    .panel {
+        background: $surface;
+        border: round $primary;
+        padding: 1 2;
+        margin: 0 1 1 1;
+    }
+
+    .panel-title {
+        text-style: bold;
+        color: $primary;
+        margin-bottom: 1;
+    }
+
+    /* Card styling */
+    .card {
+        background: $panel;
+        border: round $secondary 50%;
+        padding: 1;
+        margin: 0 0 1 0;
+    }
+
+    /* Status indicators */
+    .status-running { color: $success; }
+    .status-busy { color: $warning; }
+    .status-idle { color: $secondary; }
+    .status-offline { color: $error; }
+    .status-completed { color: $success; }
+    .status-failed { color: $error; }
+    .status-pending { color: $warning; }
+
+    /* Buttons */
+    Button {
+        margin: 0 1 0 0;
+    }
+
+    Button.primary {
+        background: $primary;
+    }
+
+    Button.success {
+        background: $success;
+    }
+
+    Button.warning {
+        background: $warning;
+    }
+
+    Button.danger {
+        background: $error;
+    }
+
+    /* Data table styling */
+    DataTable {
+        background: $surface;
+    }
+
+    DataTable > .datatable--header {
+        background: $panel;
+        text-style: bold;
+    }
+
+    DataTable > .datatable--cursor {
+        background: $primary;
+    }
+
+    /* Input styling */
+    Input {
+        background: $panel;
+        border: tall $secondary 50%;
+    }
+
+    Input:focus {
+        border: tall $primary;
+    }
+
+    /* Log viewer */
+    Log, RichLog {
+        background: $surface;
+        border: round $secondary 50%;
+    }
+
+    /* Tree view */
+    Tree {
+        background: $surface;
+    }
+
+    Tree > .tree--cursor {
+        background: $primary;
+    }
+
+    /* Progress bars */
+    ProgressBar > .bar--bar {
+        color: $primary;
+    }
+
+    ProgressBar > .bar--complete {
+        color: $success;
+    }
+
+    /* Tabs */
+    Tabs {
+        background: $surface;
+    }
+
+    Tab {
+        background: $surface;
+        padding: 0 2;
+    }
+
+    Tab.-active {
+        background: $panel;
+        text-style: bold;
+    }
+
+    /* Scrollbars */
+    Scrollbar {
+        background: $panel;
+    }
+
+    ScrollBar > .scrollbar--bar {
+        color: $secondary 50%;
+    }
+
+    ScrollBar > .scrollbar--bar:hover {
+        color: $primary;
     }
     """
 
@@ -53,11 +220,11 @@ class CLOPUSApp(App):
         Binding("l", "switch_screen('logs')", "Logs", show=True),
         Binding("o", "switch_screen('objectives')", "Objectives", show=False),
         Binding("m", "switch_screen('memory')", "Memory", show=False),
-        Binding("q", "switch_screen('questions')", "Questions", show=False),
+        Binding("question_mark", "switch_screen('questions')", "Questions", show=False),
         Binding("c", "switch_screen('config')", "Config", show=False),
-        Binding("?", "show_help", "Help", show=True),
+        Binding("f1", "show_help", "Help", show=True),
         Binding("ctrl+q", "quit", "Quit", show=True),
-        Binding("ctrl+t", "toggle_theme", "Toggle Theme", show=False),
+        Binding("ctrl+t", "toggle_theme", "Theme", show=True),
     ]
 
     SCREENS = {
@@ -73,16 +240,24 @@ class CLOPUSApp(App):
         "config": ConfigScreen,
     }
 
-    def __init__(self, *args, use_websocket: bool = False, **kwargs):
+    def __init__(self, *args, use_websocket: bool = False, start_dark: bool = False, **kwargs):
         super().__init__(*args, **kwargs)
         self._use_websocket = use_websocket
+        self._start_dark = start_dark
         self._ws_client: Optional[WebSocketClient] = None
         self._notification_svc = NotificationService(enable_desktop=True)
         self._ws_task: Optional[asyncio.Task] = None
 
+        # Register custom themes
+        self.register_theme(CLOPUS_LIGHT)
+        self.register_theme(CLOPUS_DARK)
+
     def on_mount(self) -> None:
         """Initialize app on mount"""
-        # SCREENS dict auto-registers screens, just push to dashboard
+        # Set initial theme
+        self.theme = "clopus-dark" if self._start_dark else "clopus-light"
+
+        # Push to dashboard
         self.push_screen("dashboard")
 
         # Start WebSocket or mock client
@@ -142,118 +317,43 @@ class CLOPUSApp(App):
             self.switch_screen(screen_name)
 
     def action_show_help(self) -> None:
-        """Show help screen"""
-        help_text = """
-[bold]CLOPUS TUI - Keyboard Shortcuts[/]
+        """Show help notification"""
+        help_text = """[bold]CLOPUS TUI - Keyboard Shortcuts[/]
 
-[bold]Navigation:[/]
-  d     Dashboard
-  w     Workers
-  p     Projects
-  t     Tasks
-  l     Logs
-  o     Objectives
-  m     Memory
-  q     Questions
-  c     Config
-  b     Browser
+[bold cyan]Navigation:[/]
+  d  Dashboard    w  Workers    p  Projects
+  t  Tasks        l  Logs       o  Objectives
+  m  Memory       ?  Questions  c  Config
 
-[bold]Actions:[/]
-  r         Refresh current view
-  Ctrl+T    Toggle dark/light theme
-  Ctrl+Q    Quit
+[bold cyan]Actions:[/]
+  r        Refresh current view
+  Ctrl+T   Toggle dark/light theme
+  Ctrl+Q   Quit
 
-[bold]Screen-specific:[/]
-  Enter     Select/Confirm
-  Escape    Go back / Cancel
-  Tab       Next field
-  /         Search (where available)
-
-Press any key to close this help.
-        """
-        self.notify(help_text, timeout=10)
+[bold cyan]Screen-specific:[/]
+  Enter    Select/Confirm
+  Escape   Go back / Cancel
+  Tab      Next field
+  /        Search (where available)"""
+        self.notify(help_text, timeout=15)
 
     def action_toggle_theme(self) -> None:
         """Toggle between dark and light theme"""
-        self.dark = not self.dark
-        theme_name = "Dark" if self.dark else "Light"
-        self.notify(f"Switched to {theme_name} theme")
+        if self.theme == "clopus-dark":
+            self.theme = "clopus-light"
+            self.notify("Switched to Light theme")
+        else:
+            self.theme = "clopus-dark"
+            self.notify("Switched to Dark theme")
 
     def action_quit(self) -> None:
         """Quit the application"""
         self.exit()
 
 
-class HelpScreen(Screen):
-    """Help screen showing keyboard shortcuts"""
-
-    CSS = """
-    HelpScreen {
-        align: center middle;
-    }
-
-    #help-container {
-        width: 60;
-        height: auto;
-        border: solid $primary;
-        padding: 2;
-        background: $surface;
-    }
-
-    #help-title {
-        text-style: bold;
-        text-align: center;
-        margin-bottom: 1;
-    }
-
-    .help-section {
-        margin-bottom: 1;
-    }
-
-    .help-section-title {
-        text-style: bold;
-        color: $primary;
-    }
-    """
-
-    BINDINGS = [
-        Binding("escape", "dismiss", "Close"),
-        Binding("enter", "dismiss", "Close"),
-        Binding("any", "dismiss", "Close"),
-    ]
-
-    def compose(self) -> ComposeResult:
-        from textual.containers import Container, Vertical
-        from textual.widgets import Label
-
-        with Container(id="help-container"):
-            yield Label("CLOPUS TUI Help", id="help-title")
-
-            with Vertical(classes="help-section"):
-                yield Label("[bold]Navigation[/]", classes="help-section-title")
-                yield Label("d - Dashboard")
-                yield Label("w - Workers")
-                yield Label("p - Projects")
-                yield Label("t - Tasks")
-                yield Label("l - Logs")
-                yield Label("o - Objectives")
-
-            with Vertical(classes="help-section"):
-                yield Label("[bold]Actions[/]", classes="help-section-title")
-                yield Label("r - Refresh")
-                yield Label("Ctrl+T - Toggle Theme")
-                yield Label("Ctrl+Q - Quit")
-
-            yield Label("\nPress any key to close", id="help-footer")
-
-    def action_dismiss(self) -> None:
-        """Dismiss help screen"""
-        self.app.pop_screen()
-
-
-def run_tui(use_websocket: bool = False):
+def run_tui(use_websocket: bool = False, dark: bool = False):
     """Run the CLOPUS TUI application"""
-    app = CLOPUSApp(use_websocket=use_websocket)
+    app = CLOPUSApp(use_websocket=use_websocket, start_dark=dark)
     app.run()
 
 

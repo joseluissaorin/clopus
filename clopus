@@ -587,6 +587,10 @@ cmd_tui() {
                 tui_args="$tui_args --websocket"
                 shift
                 ;;
+            --dark)
+                tui_args="$tui_args --dark"
+                shift
+                ;;
             --light)
                 tui_args="$tui_args --light"
                 shift
