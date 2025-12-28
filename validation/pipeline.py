@@ -134,8 +134,8 @@ class ValidationPipeline:
             ValidationStage.INTEGRATION_TESTS: integration_tests.IntegrationTestValidator(),
             ValidationStage.E2E_TESTS: e2e_tests.E2ETestValidator(),
             ValidationStage.SECURITY: security.SecurityValidator(),
-            ValidationStage.ARCHITECTURE: architecture.ArchitectureValidator(worker_pool),
-            ValidationStage.REVIEW: review.ReviewValidator(worker_pool),
+            ValidationStage.ARCHITECTURE: architecture.ArchitectureValidator(self.worker_pool),
+            ValidationStage.REVIEW: review.ReviewValidator(self.worker_pool),
         }
 
     async def validate(
