@@ -4,14 +4,22 @@
 """
 Intelligent routing of messages between workers.
 Handles role-based routing, load balancing, and fallback strategies.
+
+NEW IN v3.2: AI-First Worker Selection
+- Uses Claude intelligence for semantic task-to-worker matching
+- Falls back to keyword matching when AI unavailable
 """
 
+import asyncio
 import logging
 from pathlib import Path
 from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
 from dataclasses import dataclass
 from enum import Enum
+
+if TYPE_CHECKING:
+    from .ai_first import AIFirstEngine
 
 logger = logging.getLogger("clopus.message_router")
 
@@ -102,6 +110,10 @@ class MessageRouter:
     - Load balance across available workers
     - Handle fallback when primary worker unavailable
     - Track worker load and availability
+
+    NEW IN v3.2: AI-First Worker Selection
+    - Uses AI intelligence for semantic task matching
+    - Falls back to keyword matching when AI unavailable
     """
 
     def __init__(
@@ -118,6 +130,14 @@ class MessageRouter:
         # Configuration
         self.max_concurrent_per_worker = 1  # Workers handle one task at a time
         self.load_window_seconds = 60       # Time window for load calculation
+
+        # AI-First Engine (set by orchestrator, NEW in v3.2)
+        self.ai_engine: Optional["AIFirstEngine"] = None
+
+    def set_ai_engine(self, ai_engine: "AIFirstEngine") -> None:
+        """Set the AI-first engine for intelligent worker selection."""
+        self.ai_engine = ai_engine
+        logger.info("AI-First Engine connected to message router")
 
     def get_worker_for_role(
         self,
@@ -346,12 +366,67 @@ class MessageRouter:
         """
         Suggest the best role for a task based on its description.
 
+        NEW IN v3.2: AI-First approach
+        Priority:
+        1. AI-First Engine (semantic understanding)
+        2. Keyword matching (deprecated fallback)
+
         Args:
             task_description: Description of the task
 
         Returns:
             Suggested role
         """
+        # Try AI-First Engine for semantic understanding
+        if self.ai_engine:
+            try:
+                # Run async method in sync context
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    # We're in an async context, use create_task
+                    import concurrent.futures
+                    with concurrent.futures.ThreadPoolExecutor() as pool:
+                        future = pool.submit(
+                            asyncio.run,
+                            self._ai_suggest_role(task_description)
+                        )
+                        result = future.result(timeout=10)
+                        if result:
+                            return result
+                else:
+                    result = loop.run_until_complete(
+                        self._ai_suggest_role(task_description)
+                    )
+                    if result:
+                        return result
+            except Exception as e:
+                logger.debug(f"AI-first role suggestion failed: {e}")
+
+        # Fallback to keyword matching (deprecated)
+        return self._keyword_suggest_role(task_description)
+
+    async def _ai_suggest_role(self, task_description: str) -> Optional[str]:
+        """AI-First role suggestion using Claude intelligence."""
+        if not self.ai_engine:
+            return None
+
+        available_roles = list(ROLE_CAPABILITIES.keys())
+        result = await self.ai_engine.select_best_worker(
+            task_description=task_description,
+            available_roles=available_roles,
+            role_capabilities=ROLE_CAPABILITIES
+        )
+
+        if result.success and result.result:
+            selected_role = result.result.get("selected_role")
+            if selected_role and selected_role in available_roles:
+                logger.debug(f"AI-first selected role '{selected_role}' for task")
+                return selected_role
+
+        return None
+
+    def _keyword_suggest_role(self, task_description: str) -> str:
+        """DEPRECATED: Keyword-based role suggestion. Use AI-first instead."""
         description_lower = task_description.lower()
 
         # Keywords that map to roles
@@ -376,3 +451,24 @@ class MessageRouter:
             return "coder"
 
         return max(scores.items(), key=lambda x: x[1])[0]
+
+    async def suggest_role_for_task_async(self, task_description: str) -> str:
+        """
+        Async version: Suggest the best role for a task based on its description.
+
+        NEW IN v3.2: AI-First approach
+        Priority:
+        1. AI-First Engine (semantic understanding)
+        2. Keyword matching (deprecated fallback)
+        """
+        # Try AI-First Engine
+        if self.ai_engine:
+            try:
+                role = await self._ai_suggest_role(task_description)
+                if role:
+                    return role
+            except Exception as e:
+                logger.debug(f"AI-first role suggestion failed: {e}")
+
+        # Fallback to keyword matching
+        return self._keyword_suggest_role(task_description)

@@ -3,15 +3,23 @@
 # =============================================================================
 """
 Orchestrates the 8-stage validation pipeline.
+
+NEW IN v3.2: AI-First Validation Evaluation
+- Uses Claude intelligence for semantic project type detection
+- Uses AI for intelligent validation result evaluation
+- Falls back to keyword matching when AI unavailable
 """
 
 import asyncio
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
 from dataclasses import dataclass, field
 from enum import Enum
 import logging
+
+if TYPE_CHECKING:
+    from orchestrator.ai_first import AIFirstEngine
 
 logger = logging.getLogger("clopus.validation")
 
@@ -75,7 +83,14 @@ class ValidationResult:
 
 
 class ValidationPipeline:
-    """8-stage validation pipeline with configurable per-stage timeouts."""
+    """
+    8-stage validation pipeline with configurable per-stage timeouts.
+
+    NEW IN v3.2: AI-First Validation
+    - Uses AI intelligence for semantic project type detection
+    - Uses AI for intelligent result evaluation
+    - Falls back to keyword matching when AI unavailable
+    """
 
     def __init__(
         self,
@@ -92,10 +107,18 @@ class ValidationPipeline:
         self.allow_warnings = config.allow_warnings
         self.default_timeout = config.timeout_per_stage_s
 
+        # AI-First Engine (set by orchestrator, NEW in v3.2)
+        self.ai_engine: Optional["AIFirstEngine"] = None
+
         # Per-stage configurable timeouts
         self.stage_timeouts = {**DEFAULT_STAGE_TIMEOUTS}
         if stage_timeouts:
             self.stage_timeouts.update(stage_timeouts)
+
+    def set_ai_engine(self, ai_engine: "AIFirstEngine") -> None:
+        """Set the AI-first engine for intelligent validation."""
+        self.ai_engine = ai_engine
+        logger.info("AI-First Engine connected to validation pipeline")
 
         # Import stage handlers
         from .stages import (
@@ -262,8 +285,57 @@ class ValidationPipeline:
             summary=summary
         )
 
+    async def _detect_project_type_async(self, path: Path) -> str:
+        """
+        Detect the type of project.
+
+        NEW IN v3.2: AI-First approach
+        Priority:
+        1. AI-First Engine (semantic detection)
+        2. File-based detection (deprecated fallback)
+        """
+        # Try AI-First Engine for semantic detection
+        if self.ai_engine:
+            try:
+                # Gather file info
+                existing_files = []
+                for pattern in ["*.json", "*.toml", "*.py", "*.ts", "*.tsx", "*.js"]:
+                    existing_files.extend([f.name for f in path.glob(pattern)][:20])
+
+                result = await self.ai_engine.analyze_project_requirements(
+                    objective="Detect project type for validation",
+                    existing_files=existing_files,
+                    context={"path": str(path)}
+                )
+
+                if result.success and result.result:
+                    detected_type = result.result.get("project_type")
+                    if detected_type:
+                        logger.debug(f"AI-first detected project type: {detected_type}")
+                        return detected_type
+
+            except Exception as e:
+                logger.debug(f"AI-first project type detection failed: {e}")
+
+        # Fallback to file-based detection (deprecated)
+        return self._file_detect_project_type(path)
+
     def _detect_project_type(self, path: Path) -> str:
-        """Detect the type of project."""
+        """Sync wrapper for project type detection."""
+        # Try to run async version if event loop is available
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                # We're in an async context, can't await directly
+                # Fall back to sync version
+                return self._file_detect_project_type(path)
+            else:
+                return loop.run_until_complete(self._detect_project_type_async(path))
+        except RuntimeError:
+            return self._file_detect_project_type(path)
+
+    def _file_detect_project_type(self, path: Path) -> str:
+        """DEPRECATED: File-based project type detection. Use AI-first instead."""
         # Check for common project files
         if (path / "package.json").exists():
             package = (path / "package.json").read_text()

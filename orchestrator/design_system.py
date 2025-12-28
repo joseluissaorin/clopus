@@ -4,14 +4,21 @@
 """
 Design system management for the Designer worker.
 Handles design documentation, existing branding discovery, and design consultation.
+
+NEW IN v3.2: AI-First Design Extraction
+- Uses Claude intelligence for semantic design token extraction
+- Falls back to regex parsing when AI unavailable
 """
 
 import json
 import re
 from pathlib import Path
 from datetime import datetime
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, TYPE_CHECKING
 import logging
+
+if TYPE_CHECKING:
+    from .ai_first import AIFirstEngine
 
 logger = logging.getLogger("clopus.design_system")
 
@@ -25,10 +32,22 @@ class DesignSystem:
     - Discover existing project branding
     - Provide design consultation to other workers
     - Give feedback on screenshots
+
+    NEW IN v3.2: AI-First Design Extraction
+    - Uses AI intelligence for semantic design token extraction
+    - Falls back to regex parsing when AI unavailable
     """
 
     def __init__(self, memory_client=None):
         self.memory = memory_client
+
+        # AI-First Engine (set by orchestrator, NEW in v3.2)
+        self.ai_engine: Optional["AIFirstEngine"] = None
+
+    def set_ai_engine(self, ai_engine: "AIFirstEngine") -> None:
+        """Set the AI-first engine for intelligent design extraction."""
+        self.ai_engine = ai_engine
+        logger.info("AI-First Engine connected to design system")
 
     # =========================================================================
     # DESIGN DOCUMENTATION GENERATION
@@ -468,17 +487,47 @@ Review the screenshot and provide your assessment.
         self,
         project_path: str
     ) -> Dict[str, str]:
-        """Extract color definitions from the design system."""
+        """
+        Extract color definitions from the design system.
+
+        NEW IN v3.2: AI-First approach
+        Priority:
+        1. AI-First Engine (semantic extraction)
+        2. Regex parsing (deprecated fallback)
+        """
         design = await self.get_design_system(project_path)
         if not design or "documentation" not in design:
             return {}
 
-        colors = {}
         doc = design["documentation"]
+
+        # Try AI-First Engine for semantic extraction
+        if self.ai_engine:
+            try:
+                result = await self.ai_engine.analyze_design_system(
+                    design_content=doc,
+                    extract_types=["colors"]
+                )
+
+                if result.success and result.result:
+                    colors = result.result.get("colors", {})
+                    if colors:
+                        logger.debug(f"AI-first extracted {len(colors)} colors")
+                        return colors
+
+            except Exception as e:
+                logger.debug(f"AI-first color extraction failed: {e}")
+
+        # Fallback to regex parsing (deprecated)
+        return self._regex_extract_colors(doc)
+
+    def _regex_extract_colors(self, doc: str) -> Dict[str, str]:
+        """DEPRECATED: Regex-based color extraction. Use AI-first instead."""
+        colors = {}
 
         # Extract hex colors from markdown tables or text
         hex_pattern = r'#([0-9A-Fa-f]{6}|[0-9A-Fa-f]{3})\b'
-        matches = re.findall(hex_pattern, doc)
+        re.findall(hex_pattern, doc)
 
         # Try to find labeled colors
         color_line_pattern = r'\|\s*(\w+)\s*\|[^|]*\|\s*#([0-9A-Fa-f]{6})\s*\|'

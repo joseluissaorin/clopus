@@ -35,6 +35,7 @@ from .memory_client import MemoryClient
 from .shared_context import SharedContextManager, get_shared_context
 from .verificator_client import VerificatorClient, get_verificator_client
 from .architectural_verifier import ArchitecturalVerifier, get_architectural_verifier
+from .ai_first import AIFirstEngine, get_ai_engine
 
 if TYPE_CHECKING:
     from .worker_pool import WorkerPool
@@ -1189,13 +1190,37 @@ Please implement this requirement and ensure it passes verification.
         """
         Infer expected artifacts from task title and description.
 
-        Uses the Verificator (Worker 8) for intelligent artifact specification
-        when available, falling back to regex-based inference.
+        NEW IN v3.2: AI-First approach
+        Priority:
+        1. AI-First Engine (semantic understanding)
+        2. Verificator (Worker 8) for intelligent artifact specification
+        3. Regex-based inference (deprecated, last resort)
 
         This enables artifact verification - tasks that claim to create files
         must actually create them.
         """
-        # Try using verificator for intelligent artifact specification
+        # Priority 1: Try AI-First Engine
+        ai_engine = get_ai_engine()
+        if ai_engine:
+            try:
+                result = await ai_engine.infer_artifacts(
+                    task_title=title,
+                    task_description=description,
+                    project_context={"path": project_path}
+                )
+                if result.success and result.result:
+                    artifacts = result.result.get("artifacts", [])
+                    artifact_paths = [
+                        a.get("path", a.get("name", ""))
+                        for a in artifacts if a
+                    ]
+                    if artifact_paths:
+                        logger.info(f"AI-first inferred {len(artifact_paths)} artifacts for '{title[:50]}'")
+                        return artifact_paths
+            except Exception as e:
+                logger.debug(f"AI-first artifact inference failed: {e}")
+
+        # Priority 2: Try using verificator for intelligent artifact specification
         if self.verificator_client:
             try:
                 artifacts = await self.verificator_client.specify_artifacts(
@@ -1209,7 +1234,12 @@ Please implement this requirement and ensure it passes verification.
             except Exception as e:
                 logger.debug(f"Verificator artifact specification failed: {e}")
 
-        # Fallback: Regex-based inference
+        # Priority 3: Fallback to Regex-based inference (DEPRECATED)
+        logger.debug("Using deprecated regex artifact inference")
+        return self._regex_infer_artifacts(title, description)
+
+    def _regex_infer_artifacts(self, title: str, description: str) -> list:
+        """DEPRECATED: Regex-based artifact inference. Use AI-first instead."""
         import re
         artifacts = []
 

@@ -3,13 +3,20 @@
 # =============================================================================
 """
 Handles project initialization including CLAUDE.md generation.
+
+NEW IN v3.2: AI-First Project Detection
+- Uses Claude intelligence for semantic project type detection
+- Falls back to keyword matching when AI unavailable
 """
 
 import asyncio
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, Optional, TYPE_CHECKING
 import logging
+
+if TYPE_CHECKING:
+    from .ai_first import AIFirstEngine
 
 logger = logging.getLogger("clopus.project_setup")
 
@@ -89,10 +96,24 @@ CLAUDE_MD_TEMPLATE = '''# CLAUDE.md - Project Guidelines
 
 
 class ProjectSetup:
-    """Handles project initialization and CLAUDE.md generation."""
+    """
+    Handles project initialization and CLAUDE.md generation.
+
+    NEW IN v3.2: AI-First Project Detection
+    - Uses AI intelligence for semantic project type detection
+    - Falls back to keyword matching when AI unavailable
+    """
 
     def __init__(self, workspace_path: str = "/workspace"):
         self.workspace = Path(workspace_path)
+
+        # AI-First Engine (set by orchestrator, NEW in v3.2)
+        self.ai_engine: Optional["AIFirstEngine"] = None
+
+    def set_ai_engine(self, ai_engine: "AIFirstEngine") -> None:
+        """Set the AI-first engine for intelligent project detection."""
+        self.ai_engine = ai_engine
+        logger.info("AI-First Engine connected to project setup")
 
     async def setup_project(
         self,
@@ -106,7 +127,7 @@ class ProjectSetup:
 
         # Detect or use provided project type
         if not project_type:
-            project_type = self._detect_project_type(path, objective_content)
+            project_type = await self._detect_project_type(path, objective_content)
 
         # Generate CLAUDE.md
         claude_md = await self._generate_claude_md(path, objective_content, project_type)
@@ -116,8 +137,42 @@ class ProjectSetup:
         logger.info(f"Created CLAUDE.md for project: {path}")
         return claude_md_path
 
-    def _detect_project_type(self, path: Path, objective: str) -> str:
-        """Detect project type from existing files or objective."""
+    async def _detect_project_type(self, path: Path, objective: str) -> str:
+        """
+        Detect project type from existing files or objective.
+
+        NEW IN v3.2: AI-First approach
+        Priority:
+        1. AI-First Engine (semantic understanding)
+        2. Keyword matching (deprecated fallback)
+        """
+        # Try AI-First Engine for semantic understanding
+        if self.ai_engine:
+            try:
+                # Gather file context
+                existing_files = []
+                for pattern in ["*.json", "*.txt", "*.toml", "*.yaml", "*.yml", "*.md"]:
+                    existing_files.extend([f.name for f in path.glob(pattern)])
+
+                result = await self.ai_engine.analyze_project_requirements(
+                    objective=objective,
+                    existing_files=existing_files,
+                    context={"path": str(path)}
+                )
+
+                if result.success and result.result:
+                    detected_type = result.result.get("project_type")
+                    if detected_type:
+                        logger.debug(f"AI-first detected project type: {detected_type}")
+                        return detected_type
+            except Exception as e:
+                logger.debug(f"AI-first project detection failed: {e}")
+
+        # Fallback to keyword matching (deprecated)
+        return self._keyword_detect_project_type(path, objective)
+
+    def _keyword_detect_project_type(self, path: Path, objective: str) -> str:
+        """DEPRECATED: Keyword-based project type detection. Use AI-first instead."""
         objective_lower = objective.lower()
 
         # Check objective keywords

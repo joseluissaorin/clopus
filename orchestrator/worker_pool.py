@@ -4,22 +4,37 @@
 """
 Manages the pool of Claude Code worker instances.
 Handles task dispatch, result collection, and worker health monitoring.
+
+NEW IN v3.2: AI-First Intelligence Integration
+- Supports AI-first inference task types
+- Error recovery intelligence
+- Task dependency analysis
+- Commit strategy, test selection, doc updates
 """
 
 import asyncio
 import json
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, TYPE_CHECKING
 import logging
 
 from .config import WorkerConfig
+
+if TYPE_CHECKING:
+    from .ai_first import AIFirstEngine
 
 logger = logging.getLogger("clopus.worker_pool")
 
 
 class WorkerPool:
-    """Manage Claude Code worker instances."""
+    """
+    Manage Claude Code worker instances.
+
+    NEW IN v3.2: AI-First Intelligence Integration
+    - Supports AI-first inference task types for error recovery,
+      dependency analysis, commit strategy, test selection, etc.
+    """
 
     def __init__(
         self,
@@ -35,6 +50,14 @@ class WorkerPool:
 
         # Skills engine for enhanced prompts (set by orchestrator)
         self.skills_engine = None
+
+        # AI-First Engine (set by orchestrator, NEW in v3.2)
+        self.ai_engine: Optional["AIFirstEngine"] = None
+
+    def set_ai_engine(self, ai_engine: "AIFirstEngine") -> None:
+        """Set the AI-first engine for intelligent task processing."""
+        self.ai_engine = ai_engine
+        logger.info("AI-First Engine connected to worker pool")
 
     async def initialize(self) -> None:
         """Initialize worker pool."""
@@ -108,7 +131,9 @@ class WorkerPool:
         cwd: str = "/workspace",
         relevant_skills: Optional[List[Dict]] = None,
         memory_context: Optional[str] = None,
-        ack_timeout: int = 10
+        ack_timeout: int = 10,
+        session_mode: str = "auto",
+        resume_session: Optional[str] = None
     ) -> bool:
         """Dispatch a task to a worker with acknowledgment handshake.
 
@@ -121,6 +146,8 @@ class WorkerPool:
             relevant_skills: Optional list of relevant skills
             memory_context: Optional memory context
             ack_timeout: Seconds to wait for worker acknowledgment (default 10)
+            session_mode: Claude Code session mode ('auto', 'continue', 'new')
+            resume_session: Optional session ID to resume
 
         Returns:
             True if task was acknowledged by worker, False otherwise
@@ -144,13 +171,18 @@ class WorkerPool:
             memory_context
         )
 
-        # Create task file
+        # Create task file with session handling
         task_data = {
             "task_id": task_id,
             "prompt": prompt,
             "cwd": cwd,
-            "dispatched_at": datetime.now().isoformat()
+            "dispatched_at": datetime.now().isoformat(),
+            "session_mode": session_mode
         }
+
+        # Add session resume if provided
+        if resume_session:
+            task_data["resume_session"] = resume_session
 
         pending_file = worker["ipc_dir"] / "pending.json"
         ack_file = worker["ipc_dir"] / "ack.json"
@@ -201,6 +233,32 @@ class WorkerPool:
         for worker_id, worker in self.workers.items():
             if worker["role"] == "heartbeat":
                 return worker_id
+        return None
+
+    def get_worker_session(self, worker_id: int) -> Optional[str]:
+        """Get the last session ID for a worker.
+
+        Useful for continuing sessions when dispatching follow-up tasks.
+        """
+        if worker_id in self.workers:
+            return self.workers[worker_id].get("last_session_id")
+        return None
+
+    def get_session_for_project(self, project_path: str, role: str) -> Optional[str]:
+        """Find a session ID for a specific project/role combination.
+
+        Searches all workers with the given role for a session in the specified project.
+        """
+        for worker_id, worker in self.workers.items():
+            if worker["role"] == role:
+                session_file = worker["ipc_dir"] / "session.json"
+                if session_file.exists():
+                    try:
+                        session_data = json.loads(session_file.read_text())
+                        if session_data.get("project") == project_path:
+                            return session_data.get("session_id")
+                    except (json.JSONDecodeError, OSError):
+                        continue
         return None
 
     async def get_idle_workers(self, role: Optional[str] = None, include_reserved: bool = False) -> List[Dict]:
@@ -503,6 +561,12 @@ Always return results as JSON:
                     worker["current_task"] = None
                     worker["last_heartbeat"] = datetime.now()
 
+                    # Track session ID for future task continuations
+                    session_id = result_data.get("session_id")
+                    if session_id:
+                        worker["last_session_id"] = session_id
+                        logger.debug(f"Worker {worker_id} session: {session_id}")
+
                     logger.info(f"Collected result from worker {worker_id}: {result_data.get('task_id')}")
 
                 except FileNotFoundError:
@@ -682,16 +746,21 @@ Always return results as JSON:
         self,
         task_type: str,
         task_data: Dict[str, Any],
-        timeout_seconds: int = 60
+        timeout_seconds: int = 60,
+        session_mode: str = "auto",
+        resume_session: Optional[str] = None
     ) -> Optional[Dict[str, Any]]:
         """
         Dispatch a verification task to the verificator worker and wait for result.
 
         Args:
             task_type: One of SPECIFY_ARTIFACTS, VERIFY_COMPLETION, CHECK_DUPLICATE,
-                      MATCH_PROJECT, AUDIT_COMPLETED, SEMANTIC_CHECK
+                      MATCH_PROJECT, AUDIT_COMPLETED, SEMANTIC_CHECK,
+                      OBJECTIVE_ANALYSIS, TASK_GENERATION
             task_data: Context data for the verification
             timeout_seconds: Maximum time to wait for result
+            session_mode: Claude Code session mode ('auto', 'continue', 'new')
+            resume_session: Optional session ID to resume
 
         Returns:
             Parsed JSON result from verificator, or None if failed/timeout
@@ -725,13 +794,18 @@ Always return results as JSON:
         # Create unique task ID
         verification_task_id = f"verify-{task_type.lower()}-{uuid.uuid4().hex[:8]}"
 
-        # Dispatch task
+        # Dispatch task with session handling
         task_json = {
             "task_id": verification_task_id,
             "prompt": prompt,
             "cwd": task_data.get("project_path", "/workspace"),
-            "dispatched_at": datetime.now().isoformat()
+            "dispatched_at": datetime.now().isoformat(),
+            "session_mode": session_mode
         }
+
+        # Add session resume if provided
+        if resume_session:
+            task_json["resume_session"] = resume_session
 
         pending_file = worker["ipc_dir"] / "pending.json"
         pending_file.write_text(json.dumps(task_json, indent=2))
@@ -754,9 +828,23 @@ Always return results as JSON:
                     worker["status"] = "idle"
                     worker["current_task"] = None
 
+                    # Capture session ID for future continuations
+                    session_id = result_data.get("session_id")
+                    if session_id:
+                        worker["last_session_id"] = session_id
+                        logger.debug(f"Verification worker session: {session_id}")
+
                     # Parse the actual output from Claude's response
-                    output = result_data.get("output", "")
-                    return self._parse_verification_result(output, task_type)
+                    output = result_data.get("result", result_data.get("output", ""))
+                    parsed_result = self._parse_verification_result(output, task_type)
+
+                    # Include session ID in result for AI planner session continuity
+                    if parsed_result and isinstance(parsed_result, dict):
+                        parsed_result["_session_id"] = session_id
+                    elif parsed_result:
+                        parsed_result = {"result": parsed_result, "_session_id": session_id}
+
+                    return parsed_result
 
                 except json.JSONDecodeError as e:
                     logger.error(f"Invalid result JSON: {e}")
@@ -952,6 +1040,357 @@ Return your findings:
   }},
   "files_affected": ["app/api/v1/endpoints/nodes.py"],
   "remediation_steps": ["Replace in-memory dict with SQLAlchemy session", "..."]
+}}""",
+
+            # =====================================================================
+            # AI PLANNING TASK TYPES (NEW in v3.1)
+            # These enable AI-first task generation instead of template-based
+            # =====================================================================
+
+            "OBJECTIVE_ANALYSIS": f"""TASK TYPE: OBJECTIVE_ANALYSIS
+
+{task_data.get('prompt', 'Analyze this objective.')}
+
+You are analyzing an objective for CLOPUS, a universal autonomous agent system.
+This agent can build ANYTHING - not just predefined project types.
+
+CRITICAL: Do NOT use pattern matching or templates. Use YOUR INTELLIGENCE to understand
+what the user wants and design a custom solution tailored to their specific needs.
+
+The output MUST be valid JSON that can be parsed. No additional text before or after the JSON.""",
+
+            "TASK_GENERATION": f"""TASK TYPE: TASK_GENERATION
+
+{task_data.get('prompt', 'Generate tasks for this project.')}
+
+You are generating tasks for CLOPUS, a universal autonomous agent system.
+Generate SPECIFIC, ACTIONABLE tasks tailored to this exact project.
+
+CRITICAL:
+- Do NOT use generic task templates
+- Tasks must be specific to the requirements
+- Include expected file paths and validation criteria
+- Each task should produce concrete, verifiable artifacts
+
+The output MUST be valid JSON that can be parsed. No additional text before or after the JSON.""",
+
+            # =====================================================================
+            # AI-FIRST INFERENCE TASK TYPES (NEW in v3.2)
+            # Replace all regex/pattern matching with Claude intelligence
+            # =====================================================================
+
+            "ARTIFACT_INFERENCE": f"""TASK TYPE: ARTIFACT_INFERENCE
+
+{task_data.get('prompt', 'Infer expected artifacts from this task.')}
+
+You are analyzing a task to determine what files, endpoints, or artifacts it should create.
+
+Use YOUR INTELLIGENCE to understand the task intent, not pattern matching.
+For example:
+- "Implement user authentication" → auth.py, middleware/auth.py, tests/test_auth.py
+- "Add dark mode toggle" → ThemeToggle.tsx, theme.css, useTheme.ts
+
+RESPOND WITH JSON ONLY:
+{{
+    "artifacts": [
+        {{"type": "file", "path": "path/to/file.py", "purpose": "why this file"}},
+        {{"type": "endpoint", "path": "/api/users", "method": "POST", "purpose": "why"}},
+        {{"type": "component", "name": "UserProfile", "path": "src/components/UserProfile.tsx"}}
+    ],
+    "confidence": 0.85,
+    "reasoning": "Based on the task description..."
+}}""",
+
+            "PROJECT_DETECTION": f"""TASK TYPE: PROJECT_DETECTION
+
+{task_data.get('prompt', 'Detect which project this task belongs to.')}
+
+You are determining which project a task should run in.
+
+Use YOUR INTELLIGENCE to understand the task context, not keyword matching.
+For example:
+- "Fix the API endpoint" + projects=[nexus-api, nexus-web] → nexus-api
+- "Update the React component" → likely a web/frontend project
+
+Available Projects: {task_data.get('available_projects', [])}
+
+RESPOND WITH JSON ONLY:
+{{
+    "project_path": "/workspace/project-name",
+    "confidence": 0.9,
+    "reasoning": "This task mentions X which is in project Y"
+}}""",
+
+            "DUPLICATE_CHECK": f"""TASK TYPE: DUPLICATE_CHECK
+
+{task_data.get('prompt', 'Check if these tasks are duplicates.')}
+
+You are determining if two tasks are semantically the same (doing the same work).
+
+Use YOUR INTELLIGENCE to understand intent, not word overlap.
+For example:
+- "Create user model" vs "Implement User SQLAlchemy model" → DUPLICATE
+- "Add login endpoint" vs "Create user registration" → NOT DUPLICATE
+
+RESPOND WITH JSON ONLY:
+{{
+    "is_duplicate": true/false,
+    "similarity": 0.95,
+    "reasoning": "Both tasks are creating the same...",
+    "differences": ["Task 1 also includes X", "Task 2 focuses on Y"]
+}}""",
+
+            "TECH_DETECTION": f"""TASK TYPE: TECH_DETECTION
+
+{task_data.get('prompt', 'Detect technologies for this project.')}
+
+You are determining what technologies a project should use.
+
+Use YOUR INTELLIGENCE to understand requirements, not keyword matching.
+For example:
+- "Modern web app" → React, TypeScript, Tailwind (inferred)
+- "Real-time features" → WebSocket, Redis (inferred)
+
+RESPOND WITH JSON ONLY:
+{{
+    "technologies": [
+        {{"name": "React", "category": "frontend", "confidence": 0.95, "reason": "explicitly mentioned"}},
+        {{"name": "TypeScript", "category": "language", "confidence": 0.8, "reason": "implied by React + modern"}}
+    ],
+    "stack_summary": "React + TypeScript frontend with FastAPI backend",
+    "recommendations": ["Consider adding Tailwind for styling"]
+}}""",
+
+            "FEATURE_EXTRACTION": f"""TASK TYPE: FEATURE_EXTRACTION
+
+{task_data.get('prompt', 'Extract features from this objective.')}
+
+You are extracting features from an objective description.
+
+Use YOUR INTELLIGENCE to understand both explicit and implicit features.
+For example:
+- "with dark mode and user auth" → [dark mode, user authentication]
+- Implicit features: login implies signup, logout, password reset
+
+RESPOND WITH JSON ONLY:
+{{
+    "features": [
+        {{"name": "User Authentication", "explicit": true, "priority": "high", "subfeatures": ["login", "logout", "signup"]}},
+        {{"name": "Dark Mode", "explicit": true, "priority": "medium", "subfeatures": ["theme toggle", "system preference detection"]}}
+    ],
+    "total_scope": "medium",
+    "missing_clarifications": ["Which OAuth providers to support?"]
+}}""",
+
+            "SKILL_MATCHING": f"""TASK TYPE: SKILL_MATCHING
+
+{task_data.get('prompt', 'Match skills for this task.')}
+
+You are determining which skills are most relevant for a task.
+
+Use YOUR INTELLIGENCE to understand semantic relevance, not keyword overlap.
+For example:
+- "Implement REST API" → [fastapi, api-design, testing]
+- The skill descriptions tell you what each skill does
+
+RESPOND WITH JSON ONLY:
+{{
+    "matched_skills": [
+        {{"name": "fastapi", "relevance": 0.95, "reason": "Task involves API development"}},
+        {{"name": "testing", "relevance": 0.7, "reason": "APIs should have tests"}}
+    ],
+    "skill_load_order": ["fastapi", "api-design", "testing"]
+}}""",
+
+            "ENTITY_EXTRACTION": f"""TASK TYPE: ENTITY_EXTRACTION
+
+{task_data.get('prompt', 'Extract entities from this text.')}
+
+You are extracting entities (models, components, endpoints, etc.) from text.
+
+Use YOUR INTELLIGENCE to understand context-dependent entity types.
+For example:
+- "User profile with avatar" → User (model), Avatar (component)
+- Relationships between entities
+
+RESPOND WITH JSON ONLY:
+{{
+    "entities": [
+        {{"name": "User", "type": "model", "context": "user profile", "attributes": ["name", "email", "avatar"]}},
+        {{"name": "UserProfile", "type": "component", "context": "display user info"}},
+        {{"name": "/users", "type": "endpoint", "methods": ["GET", "POST", "PUT"]}}
+    ],
+    "relationships": [
+        {{"from": "UserProfile", "to": "User", "type": "displays"}}
+    ]
+}}""",
+
+            # =====================================================================
+            # AI-FIRST INFERENCE TASK TYPES - Part 2 (NEW in v3.2)
+            # Additional intelligence for autonomous operation
+            # =====================================================================
+
+            "ERROR_RECOVERY": f"""TASK TYPE: ERROR_RECOVERY
+
+{task_data.get('prompt', 'Diagnose this error and recommend recovery.')}
+
+You are diagnosing an error and recommending a recovery strategy.
+
+Error: {task_data.get('error', 'Unknown error')}
+Context: {task_data.get('context', 'No context provided')}
+Failed Task: {task_data.get('failed_task', 'Unknown task')}
+Retry Count: {task_data.get('retry_count', 0)}
+
+Use YOUR INTELLIGENCE to understand the root cause and suggest fixes.
+
+RESPOND WITH JSON ONLY:
+{{
+    "diagnosis": "Root cause analysis...",
+    "severity": "critical|high|medium|low",
+    "recovery_strategy": "retry|modify_task|skip|escalate|manual",
+    "recommended_actions": [
+        {{"action": "Specific action to take", "priority": 1}},
+        {{"action": "Second action", "priority": 2}}
+    ],
+    "modified_task": null or {{"title": "...", "description": "..."}},
+    "confidence": 0.85,
+    "requires_user_input": true/false
+}}""",
+
+            "DEPENDENCY_ANALYSIS": f"""TASK TYPE: DEPENDENCY_ANALYSIS
+
+{task_data.get('prompt', 'Analyze task dependencies.')}
+
+You are analyzing task dependencies to determine execution order.
+
+Tasks: {json.dumps(task_data.get('tasks', []), indent=2)}
+
+Use YOUR INTELLIGENCE to understand semantic dependencies, not just explicit ones.
+For example:
+- "Add user model" must come before "Add user endpoints"
+- "Setup project" is implicitly a dependency for everything
+
+RESPOND WITH JSON ONLY:
+{{
+    "dependency_graph": {{
+        "task_id_1": ["depends_on_task_id_2", "depends_on_task_id_3"],
+        "task_id_2": []
+    }},
+    "execution_order": ["task_id_2", "task_id_1"],
+    "parallel_groups": [
+        ["task_a", "task_b"],
+        ["task_c"]
+    ],
+    "critical_path": ["task_x", "task_y", "task_z"],
+    "reasoning": "Task X must complete before Y because..."
+}}""",
+
+            "COMMIT_STRATEGY": f"""TASK TYPE: COMMIT_STRATEGY
+
+{task_data.get('prompt', 'Plan commit strategy.')}
+
+You are planning how to commit changes logically.
+
+Changes: {json.dumps(task_data.get('changes', []), indent=2)}
+Files Modified: {task_data.get('files_modified', [])}
+
+Use YOUR INTELLIGENCE to group related changes and write good commit messages.
+
+RESPOND WITH JSON ONLY:
+{{
+    "commits": [
+        {{
+            "files": ["file1.py", "file2.py"],
+            "message": "feat: Add user authentication",
+            "type": "feat|fix|refactor|docs|test|chore",
+            "scope": "auth",
+            "breaking": false
+        }}
+    ],
+    "commit_order": [0, 1, 2],
+    "reasoning": "Grouping auth-related changes together..."
+}}""",
+
+            "TEST_SELECTION": f"""TASK TYPE: TEST_SELECTION
+
+{task_data.get('prompt', 'Select tests to run.')}
+
+You are selecting which tests to run based on changes made.
+
+Changes: {json.dumps(task_data.get('changes', []), indent=2)}
+Available Tests: {task_data.get('available_tests', [])}
+Test Types: unit, integration, e2e
+
+Use YOUR INTELLIGENCE to select relevant tests, not just matching filenames.
+
+RESPOND WITH JSON ONLY:
+{{
+    "tests_to_run": [
+        {{"test": "test_auth.py", "reason": "Auth module was modified", "priority": 1}},
+        {{"test": "test_api.py", "reason": "API depends on auth", "priority": 2}}
+    ],
+    "test_order": ["unit", "integration", "e2e"],
+    "estimated_duration": "5 minutes",
+    "skip_reasons": {{
+        "test_unrelated.py": "No changes affect this test"
+    }}
+}}""",
+
+            "DOC_UPDATE_SUGGESTION": f"""TASK TYPE: DOC_UPDATE_SUGGESTION
+
+{task_data.get('prompt', 'Suggest documentation updates.')}
+
+You are suggesting which documentation needs updating based on code changes.
+
+Changes: {json.dumps(task_data.get('changes', []), indent=2)}
+Existing Docs: {task_data.get('existing_docs', [])}
+
+Use YOUR INTELLIGENCE to identify documentation that needs updating.
+
+RESPOND WITH JSON ONLY:
+{{
+    "updates_needed": [
+        {{
+            "doc_path": "README.md",
+            "section": "API Endpoints",
+            "change_type": "add|update|remove",
+            "reason": "New endpoint added",
+            "suggested_content": "## New Endpoint\\n..."
+        }}
+    ],
+    "new_docs_suggested": [
+        {{"path": "docs/auth.md", "purpose": "Document authentication flow"}}
+    ],
+    "priority": "high|medium|low"
+}}""",
+
+            "QUALITY_PREDICTION": f"""TASK TYPE: QUALITY_PREDICTION
+
+{task_data.get('prompt', 'Predict quality issues.')}
+
+You are predicting potential quality issues before they occur.
+
+Task: {task_data.get('task_description', 'Unknown task')}
+Code Changes: {task_data.get('code_changes', 'No changes')}
+Project Context: {task_data.get('context', 'No context')}
+
+Use YOUR INTELLIGENCE to identify potential issues proactively.
+
+RESPOND WITH JSON ONLY:
+{{
+    "predicted_issues": [
+        {{
+            "type": "security|performance|reliability|maintainability",
+            "description": "Potential SQL injection in user input",
+            "severity": "critical|high|medium|low",
+            "likelihood": 0.8,
+            "prevention": "Use parameterized queries",
+            "affected_files": ["app/api/users.py"]
+        }}
+    ],
+    "overall_risk_score": 0.3,
+    "recommendations": ["Add input validation", "Add rate limiting"],
+    "confidence": 0.85
 }}""",
         }
 

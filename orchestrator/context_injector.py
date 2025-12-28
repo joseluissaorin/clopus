@@ -4,6 +4,11 @@
 """
 Injects relevant context from memory into tasks before dispatch.
 Also extracts learnings from completed tasks and stores them.
+
+NEW IN v3.2: AI-First Context and Learning
+- Uses Claude intelligence for semantic context relevance
+- Uses AI for intelligent learning extraction
+- Falls back to keyword/regex matching when AI unavailable
 """
 
 import json
@@ -11,7 +16,10 @@ import logging
 import re
 from pathlib import Path
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .ai_first import AIFirstEngine
 
 logger = logging.getLogger("clopus.context_injector")
 
@@ -29,6 +37,11 @@ class ContextInjector:
     - Extract patterns, solutions, and warnings from results
     - Store in long-term memory with role tags
     - Update shared memory cache
+
+    NEW IN v3.2: AI-First Context and Learning
+    - Uses AI intelligence for semantic context relevance
+    - Uses AI for intelligent learning extraction
+    - Falls back to keyword/regex matching when AI unavailable
     """
 
     def __init__(
@@ -40,7 +53,10 @@ class ContextInjector:
         self.ipc_path = Path(ipc_path)
         self.shared_path = self.ipc_path / "memory" / "shared"
 
-        # Keywords that trigger context searches
+        # AI-First Engine (set by orchestrator, NEW in v3.2)
+        self.ai_engine: Optional["AIFirstEngine"] = None
+
+        # Keywords that trigger context searches (deprecated, used as fallback)
         self.context_triggers = {
             "design": ["color", "style", "ui", "ux", "design", "theme", "visual"],
             "api": ["api", "endpoint", "fetch", "request", "http"],
@@ -48,7 +64,7 @@ class ContextInjector:
             "error": ["error", "bug", "fix", "issue", "problem"],
         }
 
-        # Keywords for learning extraction
+        # Keywords for learning extraction (deprecated, used as fallback)
         self.learning_patterns = {
             "solution": [
                 r"solved by",
@@ -74,6 +90,11 @@ class ContextInjector:
             ],
         }
 
+    def set_ai_engine(self, ai_engine: "AIFirstEngine") -> None:
+        """Set the AI-first engine for intelligent context and learning."""
+        self.ai_engine = ai_engine
+        logger.info("AI-First Engine connected to context injector")
+
     async def inject_context(
         self,
         task: Dict[str, Any],
@@ -82,6 +103,11 @@ class ContextInjector:
     ) -> Dict[str, Any]:
         """
         Inject relevant context into a task before dispatch.
+
+        NEW IN v3.2: AI-First approach
+        Priority:
+        1. AI-First Engine (semantic relevance)
+        2. Keyword-based selection (deprecated fallback)
 
         Args:
             task: Task dictionary with at least 'prompt' or 'description'
@@ -96,6 +122,67 @@ class ContextInjector:
         if not task_text:
             return task
 
+        # Try AI-First Engine for intelligent context selection
+        if self.ai_engine:
+            try:
+                # Gather available context
+                available_context = await self._gather_available_context(project_path)
+
+                result = await self.ai_engine.determine_relevant_context(
+                    task_description=task_text,
+                    worker_role=worker_role,
+                    available_context=available_context
+                )
+
+                if result.success and result.result:
+                    relevant_sections = result.result.get("relevant_context", [])
+                    if relevant_sections:
+                        context_block = "\n\n---\n## Relevant Context (AI-Selected)\n\n" + "\n\n".join(relevant_sections)
+
+                        if "prompt" in task:
+                            task["prompt"] = task["prompt"] + context_block
+                        elif "description" in task:
+                            task["description"] = task["description"] + context_block
+
+                        logger.info(f"AI-first injected {len(relevant_sections)} context sections")
+                        return task
+
+            except Exception as e:
+                logger.debug(f"AI-first context injection failed: {e}")
+
+        # Fallback to keyword-based context selection (deprecated)
+        return await self._keyword_inject_context(task, task_text, worker_role, project_path)
+
+    async def _gather_available_context(self, project_path: Optional[str] = None) -> Dict[str, Any]:
+        """Gather all available context for AI to select from."""
+        context = {}
+
+        # Get design system
+        if project_path:
+            design_context = await self._get_design_context(project_path)
+            if design_context:
+                context["design_system"] = design_context
+
+        # Get shared learnings
+        shared_context = await self._get_shared_context("")
+        if shared_context:
+            context["shared_learnings"] = shared_context
+
+        # Get API endpoints
+        api_context = await self._get_api_context()
+        if api_context:
+            context["api_endpoints"] = api_context
+
+        return context
+
+    async def _keyword_inject_context(
+        self,
+        task: Dict[str, Any],
+        task_text: str,
+        worker_role: str,
+        project_path: Optional[str]
+    ) -> Dict[str, Any]:
+        """DEPRECATED: Keyword-based context injection. Use AI-first instead."""
         # Collect context to inject
         context_sections = []
 
@@ -290,6 +377,11 @@ class ContextInjector:
         """
         Extract learnings from a completed task result.
 
+        NEW IN v3.2: AI-First approach
+        Priority:
+        1. AI-First Engine (semantic extraction)
+        2. Regex pattern matching (deprecated fallback)
+
         Args:
             task_result: Result from the worker
             task: Original task
@@ -303,6 +395,63 @@ class ContextInjector:
         if not result_text or len(result_text) < 50:
             return []
 
+        # Try AI-First Engine for intelligent learning extraction
+        if self.ai_engine:
+            try:
+                result = await self.ai_engine.extract_learnings(
+                    task_result=result_text,
+                    task_description=task.get("prompt", task.get("description", "")),
+                    worker_role=worker_role
+                )
+
+                if result.success and result.result:
+                    ai_learnings = result.result.get("learnings", [])
+                    if ai_learnings:
+                        # Format AI learnings
+                        formatted_learnings = []
+                        for learning in ai_learnings[:5]:
+                            formatted = {
+                                "type": learning.get("type", "pattern"),
+                                "content": learning.get("content", ""),
+                                "from_role": worker_role,
+                                "task_id": task.get("id", "unknown"),
+                                "extracted_at": datetime.now().isoformat(),
+                                "confidence": learning.get("confidence", 0.8),
+                            }
+                            formatted_learnings.append(formatted)
+
+                        # Store in memory
+                        for learning in formatted_learnings:
+                            try:
+                                await self.memory.long_term.store(
+                                    content=learning["content"],
+                                    memory_type=learning["type"],
+                                    metadata={
+                                        "from_role": worker_role,
+                                        "task_id": task.get("id"),
+                                        "extracted_at": learning["extracted_at"],
+                                        "ai_extracted": True,
+                                    }
+                                )
+                            except Exception as e:
+                                logger.debug(f"Could not store learning: {e}")
+
+                        logger.info(f"AI-first extracted {len(formatted_learnings)} learnings")
+                        return formatted_learnings
+
+            except Exception as e:
+                logger.debug(f"AI-first learning extraction failed: {e}")
+
+        # Fallback to regex pattern matching (deprecated)
+        return await self._regex_extract_learnings(result_text, task, worker_role)
+
+    async def _regex_extract_learnings(
+        self,
+        result_text: str,
+        task: Dict[str, Any],
+        worker_role: str
+    ) -> List[Dict[str, Any]]:
+        """DEPRECATED: Regex-based learning extraction. Use AI-first instead."""
         learnings = []
 
         # Extract based on patterns

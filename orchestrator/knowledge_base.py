@@ -4,6 +4,11 @@
 """
 Manages shared knowledge: patterns, solutions, and mistakes.
 Part of the self-generating ecosystem.
+
+NEW IN v3.2: AI-First Pattern Extraction
+- Uses Claude intelligence for semantic pattern identification
+- Uses AI for intelligent learning from task outcomes
+- Falls back to keyword matching when AI unavailable
 """
 
 import asyncio
@@ -11,13 +16,23 @@ import json
 import logging
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .ai_first import AIFirstEngine
 
 logger = logging.getLogger("clopus.knowledge_base")
 
 
 class KnowledgeBase:
-    """Manages patterns, solutions, and mistakes for learning."""
+    """
+    Manages patterns, solutions, and mistakes for learning.
+
+    NEW IN v3.2: AI-First Pattern Extraction
+    - Uses AI intelligence for semantic pattern identification
+    - Uses AI for intelligent learning from task outcomes
+    - Falls back to keyword matching when AI unavailable
+    """
 
     def __init__(
         self,
@@ -30,9 +45,17 @@ class KnowledgeBase:
         self.solutions_path = self.base_path / "solutions"
         self.mistakes_path = self.base_path / "mistakes"
 
+        # AI-First Engine (set by orchestrator, NEW in v3.2)
+        self.ai_engine: Optional["AIFirstEngine"] = None
+
         # Ensure directories exist
         for path in [self.patterns_path, self.solutions_path, self.mistakes_path]:
             path.mkdir(parents=True, exist_ok=True)
+
+    def set_ai_engine(self, ai_engine: "AIFirstEngine") -> None:
+        """Set the AI-first engine for intelligent pattern extraction."""
+        self.ai_engine = ai_engine
+        logger.info("AI-First Engine connected to knowledge base")
 
     # =========================================================================
     # PATTERNS - Reusable code/workflow patterns
@@ -334,7 +357,55 @@ class KnowledgeBase:
         task_description: str,
         approach: str
     ) -> None:
-        """Learn from a task success - store as solution if novel."""
+        """
+        Learn from a task success - store as solution if novel.
+
+        NEW IN v3.2: AI-First approach
+        Priority:
+        1. AI-First Engine (semantic pattern identification)
+        2. Simple novelty check (deprecated fallback)
+        """
+        # Try AI-First Engine for intelligent pattern identification
+        if self.ai_engine:
+            try:
+                result = await self.ai_engine.identify_patterns(
+                    task_result=approach,
+                    task_type="success",
+                    context={
+                        "task_title": task_title,
+                        "task_description": task_description
+                    }
+                )
+
+                if result.success and result.result:
+                    patterns = result.result.get("patterns", [])
+                    for pattern in patterns[:3]:  # Store up to 3 patterns
+                        if pattern.get("is_novel", True):
+                            await self.store_pattern(
+                                name=pattern.get("name", task_title[:50]),
+                                category=pattern.get("category", "task-patterns"),
+                                description=pattern.get("description", task_description[:200]),
+                                pattern_content=pattern.get("content", approach[:1000]),
+                                tags=pattern.get("tags", []),
+                                source_task=task_title
+                            )
+                            logger.info(f"AI-first identified pattern: {pattern.get('name')}")
+
+                    # Also store as solution
+                    is_novel = result.result.get("is_novel_solution", True)
+                    if is_novel:
+                        await self.store_solution(
+                            problem=task_title,
+                            solution=approach,
+                            category="task-solutions",
+                            source_task=task_title
+                        )
+                    return
+
+            except Exception as e:
+                logger.debug(f"AI-first pattern identification failed: {e}")
+
+        # Fallback to simple novelty check (deprecated)
         # Check if similar solution already exists
         existing = await self.find_solutions(task_title, limit=1)
         if existing and existing[0].get("relevance", 0) > 0.9:

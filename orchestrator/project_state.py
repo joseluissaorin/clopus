@@ -4,6 +4,10 @@
 """
 Manages project state for continuity across restarts.
 Tracks progress, validation status, dev server state, and enables resumption.
+
+NEW IN v3.2: AI-First State Inference
+- Uses Claude intelligence for semantic project completeness analysis
+- Falls back to file-based checks when AI unavailable
 """
 
 import json
@@ -13,10 +17,13 @@ import socket
 import subprocess
 from pathlib import Path
 from datetime import datetime
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, TYPE_CHECKING
 from dataclasses import dataclass, field, asdict, fields
 from enum import Enum
 import logging
+
+if TYPE_CHECKING:
+    from .ai_first import AIFirstEngine
 
 logger = logging.getLogger("clopus.project_state")
 
@@ -188,6 +195,10 @@ class ProjectStateManager:
     """
     Manages project state persistence and reconciliation.
     Enables CLOPUS to resume incomplete projects across restarts.
+
+    NEW IN v3.2: AI-First State Inference
+    - Uses AI intelligence for semantic completeness analysis
+    - Falls back to file-based checks when AI unavailable
     """
 
     STATE_FILENAME = "project_state.json"
@@ -195,6 +206,14 @@ class ProjectStateManager:
     def __init__(self, workspace_path: str = "/workspace"):
         self.workspace = Path(workspace_path)
         self._states: Dict[str, ProjectState] = {}
+
+        # AI-First Engine (set by orchestrator, NEW in v3.2)
+        self.ai_engine: Optional["AIFirstEngine"] = None
+
+    def set_ai_engine(self, ai_engine: "AIFirstEngine") -> None:
+        """Set the AI-first engine for intelligent state inference."""
+        self.ai_engine = ai_engine
+        logger.info("AI-First Engine connected to project state manager")
 
     # =========================================================================
     # STATE PERSISTENCE
@@ -308,13 +327,75 @@ class ProjectStateManager:
         return incomplete_projects
 
     async def _infer_state(self, project_dir: Path) -> ProjectState:
-        """Infer project state from filesystem when no state file exists."""
+        """
+        Infer project state from filesystem when no state file exists.
+
+        NEW IN v3.2: AI-First approach
+        Priority:
+        1. AI-First Engine (semantic analysis)
+        2. File-based checks (deprecated fallback)
+        """
         state = ProjectState(
             project_name=project_dir.name,
             project_path=str(project_dir),
             status="in_progress"
         )
 
+        # Try AI-First Engine for semantic completeness analysis
+        if self.ai_engine:
+            try:
+                # Gather file info for AI analysis
+                existing_files = []
+                for ext in ["*.py", "*.ts", "*.tsx", "*.js", "*.jsx", "*.md", "*.json"]:
+                    existing_files.extend([str(f.relative_to(project_dir)) for f in project_dir.rglob(ext)][:50])
+
+                result = await self.ai_engine.analyze_project_completeness(
+                    project_path=str(project_dir),
+                    existing_files=existing_files,
+                    objective=state.objective_content
+                )
+
+                if result.success and result.result:
+                    ai_result = result.result
+
+                    # Update stages from AI analysis
+                    stages = ai_result.get("stages", {})
+                    for stage_name, stage_status in stages.items():
+                        if stage_name in state.stages:
+                            state.stages[stage_name]["status"] = stage_status
+
+                    # Update validation info
+                    validation_info = ai_result.get("validation", {})
+                    if validation_info:
+                        state.validation["stages_passed"] = validation_info.get("passed", [])
+                        state.validation["stages_pending"] = validation_info.get("pending", state.validation["stages_pending"])
+
+                    # Update flags
+                    state.has_design_system = ai_result.get("has_design_system", False)
+
+                    # Infer overall status
+                    completeness = ai_result.get("completeness_percentage", 0)
+                    if completeness >= 90:
+                        state.status = "completed"
+                    elif completeness > 0:
+                        state.status = "in_progress"
+
+                    logger.debug(f"AI-first inferred state for {project_dir.name}: {completeness}% complete")
+                    await self.save_state(state)
+                    return state
+
+            except Exception as e:
+                logger.debug(f"AI-first state inference failed: {e}")
+
+        # Fallback to file-based checks (deprecated)
+        return await self._file_based_infer_state(project_dir, state)
+
+    async def _file_based_infer_state(
+        self,
+        project_dir: Path,
+        state: ProjectState
+    ) -> ProjectState:
+        """DEPRECATED: File-based state inference. Use AI-first instead."""
         # Check for design system
         if (project_dir / ".clopus" / "design" / "DESIGN_SYSTEM.md").exists():
             state.stages["design"]["status"] = "completed"

@@ -25,6 +25,10 @@ x-worker-common: &worker-common
     - ./workers/hooks:/app/hooks:ro
     - mcp-servers:/app/mcp-servers:ro
     - ./workers/.mcp.json:/workspace/.mcp.json:ro
+    # NEW: Mount Claude Code configuration (hooks, agents, skills, settings)
+    - ./.claude:/app/claude-config:ro
+    # NEW: Session persistence - each worker gets isolated session storage
+    - claude-sessions:/home/ubuntu/.claude/projects
   environment:
     <<: *common-env
     IPC_PATH: /app/ipc
@@ -41,6 +45,15 @@ x-worker-common: &worker-common
     REDIS_PORT: 6379
     MINIO_HOST: minio
     MINIO_PORT: 9000
+    # NEW: Claude Code session handling
+    CLAUDE_CODE_SESSIONS_ENABLED: "true"
+    CLAUDE_CODE_OUTPUT_FORMAT: json
+    # NEW: Extended thinking for complex tasks
+    MAX_THINKING_TOKENS: 10000
+    # NEW: Bash command configuration
+    BASH_DEFAULT_TIMEOUT_MS: 60000
+    BASH_MAX_TIMEOUT_MS: 300000
+    CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR: 1
   depends_on:
     - chromadb
     - redis
@@ -586,6 +599,10 @@ volumes:
       o: bind
       device: ${PWD}/ipc
   anthropic-session:
+
+  # Claude Code session persistence (shared across workers for --resume capability)
+  claude-sessions:
+    driver: local
 
   # MCP Servers (built by mcp-builder)
   mcp-servers:

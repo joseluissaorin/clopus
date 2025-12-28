@@ -80,6 +80,273 @@ USER INPUT (CLI/File/Webhook)
 
 ---
 
+## AI-FIRST PLANNING (NEW in v3.1)
+
+CLOPUS now uses **Claude Code intelligence** instead of pattern matching for task planning.
+
+### What Changed
+
+**OLD APPROACH (DEPRECATED):**
+- Regex patterns to detect project types (`todo_app`, `api`, `dashboard`)
+- Hardcoded task templates for each project type
+- Limited to ~10 predefined project patterns
+- Falls back to generic 3-task plan for unknown types
+
+**NEW APPROACH (AI-FIRST):**
+- Claude analyzes each objective using real intelligence
+- Custom project structures generated dynamically
+- Tasks tailored to specific requirements
+- Supports ANY type of objective
+- Multi-project objectives supported natively
+
+### How It Works
+
+```
+USER OBJECTIVE
+      │
+      ▼
+┌─────────────────────────────────────────────────┐
+│            AI PLANNER                            │
+│                                                  │
+│  1. OBJECTIVE_ANALYSIS                          │
+│     Claude Code analyzes the objective:         │
+│     - What projects need to be created?         │
+│     - What technologies are appropriate?        │
+│     - How do projects relate to each other?     │
+│                                                  │
+│  2. TASK_GENERATION (per project)               │
+│     Claude Code generates specific tasks:       │
+│     - What files need to be created?            │
+│     - What dependencies exist?                  │
+│     - What validation criteria apply?           │
+│                                                  │
+└─────────────────────────────────────────────────┘
+      │
+      ▼
+CUSTOMIZED TASKS FOR THIS SPECIFIC OBJECTIVE
+```
+
+### Multi-Project Support
+
+One objective can now generate multiple related projects:
+
+```
+Objective: "Build a knowledge graph API with a React frontend"
+
+AI Planner Output:
+├── nexus-api/          # FastAPI backend
+│   └── Tasks: Setup, Models, Endpoints, Auth, Tests
+└── nexus-web/          # React frontend
+    └── Tasks: Setup, Components, API Client, Tests
+    └── Depends on: nexus-api (for API types)
+```
+
+### Example: Before vs After
+
+**Before (Pattern Matching):**
+```
+Objective: "Build a real-time collaborative whiteboard"
+
+Pattern matching result:
+  - Type: "custom" (no pattern matched)
+  - Tasks: Generic 3-task fallback
+    1. Research and planning
+    2. Project setup
+    3. Core implementation
+```
+
+**After (AI-First):**
+```
+Objective: "Build a real-time collaborative whiteboard"
+
+AI analysis result:
+  - Projects: [whiteboard-backend, whiteboard-frontend]
+  - Technologies: [FastAPI, WebSockets, React, Canvas API, Redis]
+  - Tasks: 15+ specific tasks including:
+    1. Setup WebSocket server infrastructure
+    2. Create canvas state synchronization protocol
+    3. Implement conflict resolution for concurrent edits
+    4. Build React canvas component with touch support
+    5. Add Redis pub/sub for multi-server scaling
+    ...etc
+```
+
+### Files Involved
+
+| File | Purpose |
+|------|---------|
+| `orchestrator/ai_planner.py` | AI-first planning implementation |
+| `orchestrator/objective_parser.py` | Now uses AI for parsing (patterns deprecated) |
+| `orchestrator/task_planner.py` | Now uses AI for task generation (templates deprecated) |
+| `orchestrator/worker_pool.py` | OBJECTIVE_ANALYSIS and TASK_GENERATION task types |
+
+### Fallback Behavior
+
+If AI planning fails (network issues, worker unavailable), the system falls back to the deprecated template-based approach. Logs will show:
+```
+WARNING: Using DEPRECATED template-based planning - AI planner unavailable
+```
+
+---
+
+## CLAUDE CODE INTEGRATION (NEW in v3.2)
+
+CLOPUS now fully integrates with Claude Code's native features for enhanced autonomy and context preservation.
+
+### Session Handling
+
+Each worker maintains persistent sessions for each project they work on:
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                  SESSION FLOW                            │
+├─────────────────────────────────────────────────────────┤
+│                                                          │
+│  Task 1 (Setup project)                                 │
+│     │                                                    │
+│     ▼ Session ID: abc123                                │
+│  ┌─────────────────────────────────┐                    │
+│  │ --output-format json            │                    │
+│  │ Returns: {session_id: "abc123"} │                    │
+│  └─────────────────────────────────┘                    │
+│     │                                                    │
+│     ▼ Session saved to IPC                              │
+│                                                          │
+│  Task 2 (Add feature - same worker, same project)       │
+│     │                                                    │
+│     ▼                                                    │
+│  ┌─────────────────────────────────┐                    │
+│  │ --continue                       │                    │
+│  │ Maintains full context          │                    │
+│  └─────────────────────────────────┘                    │
+│     │                                                    │
+│     ▼ Full memory of Task 1                             │
+│                                                          │
+│  Task 3 (Debug issue - orchestrator requests resume)    │
+│     │                                                    │
+│     ▼                                                    │
+│  ┌─────────────────────────────────┐                    │
+│  │ --resume abc123                  │                    │
+│  │ Resumes specific session        │                    │
+│  └─────────────────────────────────┘                    │
+│                                                          │
+└─────────────────────────────────────────────────────────┘
+```
+
+### Session Modes
+
+| Mode | Flag | Use Case |
+|------|------|----------|
+| **Auto** | (default) | Start new session or continue existing |
+| **Continue** | `--continue` | Continue last session in current project |
+| **Resume** | `--resume <id>` | Resume specific session by ID |
+| **New** | (no flag) | Force new session |
+
+### Hooks System
+
+Workers use Claude Code hooks for safety and logging:
+
+| Hook | When | Purpose |
+|------|------|---------|
+| **PreToolUse** | Before Bash | Block dangerous commands |
+| **PostToolUse** | After any tool | Log operations to IPC |
+
+**Dangerous Command Blocking:**
+- `rm -rf /` - Blocked
+- `sudo` commands - Blocked
+- `DROP DATABASE` - Blocked
+- `git push --force main` - Blocked
+
+### Role-Specific Configuration
+
+All workers use **Claude Opus 4.5** for maximum capability. Each role has tailored permissions:
+
+| Role | Model | Permissions |
+|------|-------|-------------|
+| **Coder** | Opus | Full file access, all build tools |
+| **Tester** | Opus | Test files only, Playwright access |
+| **Reviewer** | Opus | Read-only mode for safety |
+| **Designer** | Opus | Design files (md, json, css) only |
+| **Researcher** | Opus | Read-only, web search |
+| **Debugger** | Opus | Full access for debugging |
+| **Verificator** | Opus | Verification and analysis tasks |
+
+### Files Structure
+
+```
+.claude/
+├── settings.json           # Base configuration
+├── settings.coder.json     # Coder overrides
+├── settings.reviewer.json  # Reviewer (read-only, opus)
+├── settings.designer.json  # Designer (design files only)
+├── settings.tester.json    # Tester (test files only)
+├── hooks/
+│   ├── validate_command.py # PreToolUse: block dangerous commands
+│   └── log_operation.py    # PostToolUse: log to IPC
+├── skills/
+│   ├── architecture-compliance/
+│   └── test-strategies/
+└── commands/
+    └── worker/
+        ├── start-task.md
+        └── report-status.md
+```
+
+### Docker Volume Mounts
+
+```yaml
+volumes:
+  # Claude Code configuration (hooks, skills, settings)
+  - ./.claude:/app/claude-config:ro
+
+  # Session persistence across restarts
+  - claude-sessions:/home/ubuntu/.claude/projects
+```
+
+### AI Planner Session Continuity
+
+The AI Planner uses session continuity to maintain context during planning:
+
+```
+┌─────────────────────────────────────────────────────────┐
+│          AI PLANNING WITH SESSION CONTINUITY            │
+├─────────────────────────────────────────────────────────┤
+│                                                          │
+│  Objective: "Build a knowledge graph API with frontend"  │
+│       │                                                  │
+│       ▼                                                  │
+│  ┌─────────────────────────────────────────────┐        │
+│  │ OBJECTIVE_ANALYSIS (starts session)         │        │
+│  │ - Identifies 2 projects needed              │        │
+│  │ - Determines technologies                   │        │
+│  │ - Session ID: session_abc123                │        │
+│  └─────────────────────────────────────────────┘        │
+│       │                                                  │
+│       ▼ --continue (same session)                       │
+│  ┌─────────────────────────────────────────────┐        │
+│  │ TASK_GENERATION (nexus-api)                 │        │
+│  │ - Generates 8 tasks for backend             │        │
+│  │ - Has full context from analysis            │        │
+│  └─────────────────────────────────────────────┘        │
+│       │                                                  │
+│       ▼ --continue (same session)                       │
+│  ┌─────────────────────────────────────────────┐        │
+│  │ TASK_GENERATION (nexus-web)                 │        │
+│  │ - Generates 6 tasks for frontend            │        │
+│  │ - Knows about API project from context      │        │
+│  └─────────────────────────────────────────────┘        │
+│                                                          │
+└─────────────────────────────────────────────────────────┘
+```
+
+Benefits:
+- **Full context preserved** across analysis → task generation
+- **Multi-project awareness** - later projects know about earlier ones
+- **Better task quality** - no repeated explanations needed
+- **Faster execution** - context doesn't need rebuilding
+
+---
+
 ## CONFIDENCE ENGINE
 
 The Confidence Engine decides when to proceed autonomously vs. ask the user.

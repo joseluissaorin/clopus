@@ -4,13 +4,21 @@
 """
 Calculates decision confidence and learns from outcomes.
 Core component for autonomous operation.
+
+NEW IN v3.2: AI-First Confidence Evaluation
+- Uses Claude intelligence for semantic understanding of decision risk
+- Falls back to weighted formulas when AI unavailable
+- Understands context like "billing = always ask"
 """
 
 import asyncio
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, TYPE_CHECKING
 from dataclasses import dataclass
 import logging
 import math
+
+if TYPE_CHECKING:
+    from .ai_first import AIFirstEngine
 
 logger = logging.getLogger("clopus.confidence_engine")
 
@@ -26,7 +34,13 @@ class ConfidenceResult:
 
 
 class ConfidenceEngine:
-    """Calculate and learn decision confidence."""
+    """
+    Calculate and learn decision confidence.
+
+    NEW IN v3.2: AI-First evaluation
+    - Uses Claude intelligence for semantic understanding
+    - Falls back to weighted formulas when AI unavailable
+    """
 
     def __init__(self, memory_client, config):
         self.memory = memory_client
@@ -38,6 +52,14 @@ class ConfidenceEngine:
         # Runtime adjustments based on outcomes
         self._weight_adjustments: Dict[str, float] = {}
         self._decision_history: List[Dict] = []
+
+        # AI-First Engine (set by orchestrator, NEW in v3.2)
+        self.ai_engine: Optional["AIFirstEngine"] = None
+
+    def set_ai_engine(self, ai_engine: "AIFirstEngine") -> None:
+        """Set the AI-first engine for intelligent confidence evaluation."""
+        self.ai_engine = ai_engine
+        logger.info("AI-First Engine connected to confidence engine")
 
     async def calculate(
         self,
@@ -70,7 +92,46 @@ class ConfidenceEngine:
         decision_type: str,
         context: Dict[str, Any]
     ) -> ConfidenceResult:
-        """Full confidence evaluation with reasoning."""
+        """
+        Full confidence evaluation with reasoning.
+
+        NEW IN v3.2: AI-First approach
+        Priority:
+        1. AI-First Engine (semantic understanding)
+        2. Weighted formula (deprecated fallback)
+        """
+        # Try AI-First Engine for semantic understanding
+        if self.ai_engine:
+            try:
+                result = await self.ai_engine.evaluate_decision_confidence(
+                    decision_type=decision_type,
+                    context=context,
+                    history=self._decision_history
+                )
+                if result.success and result.result:
+                    ai_result = result.result
+                    score = ai_result.get("confidence", 0.5)
+                    should_ask = ai_result.get("should_ask", score < self.threshold)
+
+                    return ConfidenceResult(
+                        score=score,
+                        factors=ai_result.get("factors", {}),
+                        reasoning=ai_result.get("reasoning", result.reasoning or ""),
+                        should_ask=should_ask,
+                        suggested_question=ai_result.get("suggested_question")
+                    )
+            except Exception as e:
+                logger.debug(f"AI-first confidence evaluation failed: {e}")
+
+        # Fallback to weighted formula (deprecated)
+        return await self._weighted_evaluate(decision_type, context)
+
+    async def _weighted_evaluate(
+        self,
+        decision_type: str,
+        context: Dict[str, Any]
+    ) -> ConfidenceResult:
+        """DEPRECATED: Weighted formula evaluation. Use AI-first instead."""
         factors = await self._evaluate_factors(decision_type, context)
 
         # Calculate score

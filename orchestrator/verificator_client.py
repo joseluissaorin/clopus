@@ -4,11 +4,19 @@
 """
 High-level interface for intelligent verification using Worker 8 (Verificator).
 Provides semantic analysis, deduplication, and artifact verification using Claude.
+
+NEW IN v3.2: AI-First Integration
+- All fallback methods now use AI-first engine when available
+- Regex patterns are DEPRECATED and only used as last resort
+- AI understands context, intent, and semantics - regex doesn't
 """
 
 import logging
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
 from pathlib import Path
+
+if TYPE_CHECKING:
+    from .ai_first import AIFirstEngine
 
 logger = logging.getLogger("clopus.verificator_client")
 
@@ -25,6 +33,19 @@ class VerificatorClient:
         """
         self.worker_pool = worker_pool
         self._fallback_to_regex = True  # Use regex if verificator unavailable
+
+        # AI-First Engine (NEW in v3.2)
+        self.ai_engine: Optional["AIFirstEngine"] = None
+
+    def set_ai_engine(self, ai_engine: "AIFirstEngine") -> None:
+        """
+        Set the AI-first engine for intelligent fallback operations.
+
+        When the verificator worker is unavailable, AI-first engine
+        provides semantic understanding instead of regex patterns.
+        """
+        self.ai_engine = ai_engine
+        logger.info("AI-First Engine connected to verificator client")
 
     async def specify_artifacts(
         self,
@@ -313,9 +334,53 @@ class VerificatorClient:
     # =========================================================================
     # FALLBACK METHODS (When verificator is unavailable)
     # =========================================================================
+    # NEW IN v3.2: AI-First fallbacks
+    # These methods now use AI-first engine when available, regex as last resort
+
+    async def _fallback_infer_artifacts_async(self, title: str, description: str) -> List[str]:
+        """
+        AI-first artifact inference fallback.
+
+        Priority:
+        1. AI-First Engine (semantic understanding)
+        2. Regex patterns (deprecated, last resort)
+        """
+        # Try AI-First Engine
+        if self.ai_engine:
+            try:
+                result = await self.ai_engine.infer_artifacts(title, description)
+                if result.success and result.result:
+                    artifacts = result.result.get("artifacts", [])
+                    artifact_paths = [
+                        a.get("path", a.get("name", ""))
+                        for a in artifacts if a
+                    ]
+                    if artifact_paths:
+                        logger.debug(f"AI-first inferred {len(artifact_paths)} artifacts")
+                        return artifact_paths
+            except Exception as e:
+                logger.warning(f"AI-first artifact inference failed: {e}")
+
+        # Fall back to regex (deprecated)
+        logger.debug("Using deprecated regex artifact inference")
+        return self._regex_infer_artifacts(title, description)
 
     def _fallback_infer_artifacts(self, title: str, description: str) -> List[str]:
-        """Regex-based artifact inference fallback."""
+        """Sync wrapper for backward compatibility."""
+        import asyncio
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                # If in async context, use the sync fallback directly
+                return self._regex_infer_artifacts(title, description)
+            return loop.run_until_complete(
+                self._fallback_infer_artifacts_async(title, description)
+            )
+        except RuntimeError:
+            return self._regex_infer_artifacts(title, description)
+
+    def _regex_infer_artifacts(self, title: str, description: str) -> List[str]:
+        """DEPRECATED: Regex-based artifact inference. Use AI-first instead."""
         import re
 
         artifacts = []
@@ -425,6 +490,42 @@ class VerificatorClient:
         verified = len(missing) == 0
         return verified, missing, found
 
+    async def _fallback_check_duplicate_async(
+        self,
+        task1_title: str,
+        task1_description: str,
+        task2_title: str,
+        task2_description: str
+    ) -> Tuple[bool, float]:
+        """
+        AI-first duplicate detection fallback.
+
+        Priority:
+        1. AI-First Engine (semantic understanding)
+        2. Word overlap (deprecated, last resort)
+        """
+        # Try AI-First Engine
+        if self.ai_engine:
+            try:
+                result = await self.ai_engine.check_duplicate(
+                    task1_title, task1_description,
+                    task2_title, task2_description
+                )
+                if result.success and result.result:
+                    is_dup = result.result.get("is_duplicate", False)
+                    similarity = result.result.get("similarity", 0.0)
+                    logger.debug(f"AI-first duplicate check: {is_dup} ({similarity:.2f})")
+                    return is_dup, similarity
+            except Exception as e:
+                logger.warning(f"AI-first duplicate check failed: {e}")
+
+        # Fall back to word overlap (deprecated)
+        logger.debug("Using deprecated word overlap duplicate detection")
+        return self._regex_check_duplicate(
+            task1_title, task1_description,
+            task2_title, task2_description
+        )
+
     def _fallback_check_duplicate(
         self,
         task1_title: str,
@@ -432,7 +533,35 @@ class VerificatorClient:
         task2_title: str,
         task2_description: str
     ) -> Tuple[bool, float]:
-        """Word overlap based duplicate detection fallback."""
+        """Sync wrapper for backward compatibility."""
+        import asyncio
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                return self._regex_check_duplicate(
+                    task1_title, task1_description,
+                    task2_title, task2_description
+                )
+            return loop.run_until_complete(
+                self._fallback_check_duplicate_async(
+                    task1_title, task1_description,
+                    task2_title, task2_description
+                )
+            )
+        except RuntimeError:
+            return self._regex_check_duplicate(
+                task1_title, task1_description,
+                task2_title, task2_description
+            )
+
+    def _regex_check_duplicate(
+        self,
+        task1_title: str,
+        task1_description: str,
+        task2_title: str,
+        task2_description: str
+    ) -> Tuple[bool, float]:
+        """DEPRECATED: Word overlap based duplicate detection. Use AI-first instead."""
         import re
 
         def normalize(text: str) -> set:
@@ -463,14 +592,66 @@ class VerificatorClient:
 
         return is_duplicate, similarity
 
+    async def _fallback_match_project_async(
+        self,
+        objective_content: str,
+        available_projects: List[Dict]
+    ) -> Tuple[Optional[str], float]:
+        """
+        AI-first project matching fallback.
+
+        Priority:
+        1. AI-First Engine (semantic understanding)
+        2. Keyword matching (deprecated, last resort)
+        """
+        # Try AI-First Engine
+        if self.ai_engine:
+            try:
+                project_names = [
+                    p.get("path", p.get("name", ""))
+                    for p in available_projects
+                ]
+                result = await self.ai_engine.detect_project_path(
+                    task_title="",
+                    task_description=objective_content,
+                    available_projects=project_names
+                )
+                if result.success and result.result:
+                    project_path = result.result.get("project_path")
+                    confidence = result.confidence
+                    if project_path:
+                        logger.debug(f"AI-first matched project: {project_path} ({confidence:.2f})")
+                        return project_path, confidence
+            except Exception as e:
+                logger.warning(f"AI-first project matching failed: {e}")
+
+        # Fall back to keyword matching (deprecated)
+        logger.debug("Using deprecated keyword project matching")
+        return self._regex_match_project(objective_content, available_projects)
+
     def _fallback_match_project(
         self,
         objective_content: str,
         available_projects: List[Dict]
     ) -> Tuple[Optional[str], float]:
-        """Keyword matching based project matching fallback."""
-        import re
+        """Sync wrapper for backward compatibility."""
+        import asyncio
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                return self._regex_match_project(objective_content, available_projects)
+            return loop.run_until_complete(
+                self._fallback_match_project_async(objective_content, available_projects)
+            )
+        except RuntimeError:
+            return self._regex_match_project(objective_content, available_projects)
 
+    def _regex_match_project(
+        self,
+        objective_content: str,
+        available_projects: List[Dict]
+    ) -> Tuple[Optional[str], float]:
+        """DEPRECATED: Keyword matching based project matching. Use AI-first instead."""
         objective_lower = objective_content.lower()
         best_match = None
         best_score = 0.0

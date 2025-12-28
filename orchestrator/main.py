@@ -40,6 +40,8 @@ from .verificator_client import VerificatorClient, get_verificator_client, set_v
 from .collaboration import CollaborationManager
 from .message_router import MessageRouter
 from .context_injector import ContextInjector
+from .ai_planner import AIPlanner, create_ai_planner
+from .ai_first import AIFirstEngine, set_ai_engine, get_ai_engine
 from validation.pipeline import ValidationPipeline
 
 # Configure logging
@@ -88,6 +90,12 @@ class Orchestrator:
         self.message_router: Optional[MessageRouter] = None
         self.context_injector: Optional[ContextInjector] = None
 
+        # AI-first planning (NEW in v3.1)
+        self.ai_planner: Optional[AIPlanner] = None
+
+        # AI-first intelligence engine (NEW in v3.2)
+        self.ai_engine: Optional[AIFirstEngine] = None
+
     async def initialize(self) -> None:
         """Initialize all components."""
         logger.info("Initializing CLOPUS orchestrator...")
@@ -134,6 +142,37 @@ class Orchestrator:
         set_verificator_client(self.verificator_client)
         logger.info("Verificator client initialized (Worker 8)")
 
+        # =====================================================================
+        # AI-FIRST PLANNING INITIALIZATION (NEW in v3.1)
+        # =====================================================================
+        # Initialize AI planner for intelligent task generation
+        self.ai_planner = AIPlanner(self.worker_pool, self.memory)
+        logger.info("AI Planner initialized - using AI-first task generation")
+
+        # Connect worker pool to task planner and objective parser
+        # This enables AI-first planning instead of template-based planning
+        self.task_planner.set_worker_pool(self.worker_pool)
+        self.task_planner.set_ai_planner(self.ai_planner)
+        self.objective_parser.set_worker_pool(self.worker_pool)
+        self.objective_parser.set_ai_planner(self.ai_planner)
+        logger.info("AI Planner connected to task planner and objective parser")
+
+        # =====================================================================
+        # AI-FIRST INTELLIGENCE ENGINE (NEW in v3.2)
+        # =====================================================================
+        # Replaces ALL regex/pattern matching with Claude Code intelligence
+        self.ai_engine = AIFirstEngine(self.worker_pool, self.memory)
+        set_ai_engine(self.ai_engine)
+
+        # Connect AI engine to components that need it (already initialized)
+        self.confidence_engine.set_ai_engine(self.ai_engine)
+        self.task_planner.set_ai_engine(self.ai_engine)
+        self.worker_pool.set_ai_engine(self.ai_engine)
+        self.verificator_client.set_ai_engine(self.ai_engine)
+        self.objective_parser.set_ai_engine(self.ai_engine)
+        # Note: other components will be connected after they're initialized below
+        logger.info("AI-First Engine initialized - regex patterns deprecated")
+
         # Initialize inter-worker collaboration components
         self.message_router = MessageRouter(
             self.worker_pool,
@@ -149,6 +188,10 @@ class Orchestrator:
             self.memory,
             self.settings.ipc_path
         )
+
+        # Connect AI engine to collaboration components (NEW in v3.2)
+        self.message_router.set_ai_engine(self.ai_engine)
+        self.context_injector.set_ai_engine(self.ai_engine)
         logger.info("Inter-worker collaboration initialized")
 
         # Initialize status reporter
@@ -187,6 +230,11 @@ class Orchestrator:
             self.settings.skills_path
         )
         await self.skills_engine.discover_skills()
+
+        # Connect AI engine to skills engine for semantic matching (NEW in v3.2)
+        if self.ai_engine:
+            self.skills_engine.set_ai_engine(self.ai_engine)
+
         logger.info("Skills engine initialized")
 
         self.mcp_generator = MCPGenerator(
@@ -209,9 +257,11 @@ class Orchestrator:
             self.settings.validation_config,
             self.worker_pool
         )
+        self.validation_pipeline.set_ai_engine(self.ai_engine)
         logger.info("Validation pipeline initialized")
 
         self.project_setup = ProjectSetup("/workspace")
+        self.project_setup.set_ai_engine(self.ai_engine)
         logger.info("Project setup initialized")
 
         self.shared_context = get_shared_context()
@@ -222,10 +272,12 @@ class Orchestrator:
 
         # Initialize project state manager (needed by heartbeat agent)
         self.state_manager = get_state_manager(self.settings.workspace_path)
+        self.state_manager.set_ai_engine(self.ai_engine)
         logger.info("Project state manager initialized")
 
         # Initialize design system
         self.design_system = get_design_system(self.memory)
+        self.design_system.set_ai_engine(self.ai_engine)
         logger.info("Design system initialized")
 
         # Initialize heartbeat agent (completion guardian)
@@ -243,6 +295,7 @@ class Orchestrator:
         logger.info(f"Heartbeat agent initialized (interval: {heartbeat_interval}s, using worker dispatch)")
 
         self.knowledge_base = KnowledgeBase(self.memory, "/app/knowledge")
+        self.knowledge_base.set_ai_engine(self.ai_engine)
         logger.info("Knowledge base initialized")
 
         # Initialize resumption generator
@@ -994,65 +1047,137 @@ class Orchestrator:
     # PROJECT PATH DETECTION
     # =========================================================================
 
-    def _get_project_path_for_task(self, task) -> str:
+    async def _get_project_path_for_task_async(self, task) -> str:
         """
         Determine the correct project path for a task.
 
-        Uses 4-priority detection:
+        NEW IN v3.2: AI-First approach
+        Priority:
         1. Task metadata (resumption tasks)
-        2. Task description patterns
-        3. Task result patterns
+        2. AI-First Engine (semantic understanding)
+        3. Regex patterns (deprecated fallback)
         4. Auto-detect most recent project
 
         Returns: Project path string (e.g., "/workspace/nexus-api")
         """
+        project_path = None
+
+        # PRIORITY 1: Extract from task metadata (resumption tasks) - fast check
+        if hasattr(task, 'metadata') and task.metadata:
+            if isinstance(task.metadata, dict):
+                project_path = task.metadata.get('project_path')
+                if project_path:
+                    return project_path
+
+        # PRIORITY 2: AI-First project detection
+        if self.ai_engine and task.description:
+            try:
+                # Get available projects
+                workspace = Path("/workspace")
+                if workspace.exists():
+                    available_projects = [
+                        str(p) for p in workspace.iterdir()
+                        if p.is_dir() and not p.name.startswith('.')
+                    ]
+
+                    if available_projects:
+                        result = await self.ai_engine.detect_project_path(
+                            task_title=task.title if hasattr(task, 'title') else "",
+                            task_description=task.description,
+                            available_projects=available_projects,
+                            task_result=task.result if hasattr(task, 'result') else None
+                        )
+
+                        if result.success and result.result:
+                            detected_path = result.result.get("project_path")
+                            if detected_path and result.confidence > 0.5:
+                                logger.debug(f"AI-first detected project: {detected_path} ({result.confidence:.2f})")
+                                return detected_path
+            except Exception as e:
+                logger.debug(f"AI-first project detection failed: {e}")
+
+        # PRIORITY 3: Regex fallback (deprecated)
+        project_path = self._regex_detect_project_path(task)
+        if project_path:
+            return project_path
+
+        # PRIORITY 4: Find most recently modified project
+        workspace = Path("/workspace")
+        if workspace.exists():
+            projects = [
+                p for p in workspace.iterdir()
+                if p.is_dir() and not p.name.startswith('.')
+                and ((p / "package.json").exists() or (p / "requirements.txt").exists() or (p / ".clopus").exists())
+            ]
+            if projects:
+                # Sort by modification time, most recent first
+                projects.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+                project_path = str(projects[0])
+                logger.debug(f"Auto-detected project for task: {project_path}")
+                return project_path
+
+        # Fallback to workspace root
+        return "/workspace"
+
+    def _get_project_path_for_task(self, task) -> str:
+        """Sync wrapper for backward compatibility."""
+        import asyncio
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                # In async context, use regex fallback for sync call
+                project_path = self._regex_detect_project_path(task)
+                if project_path:
+                    return project_path
+                return self._fallback_recent_project()
+            return loop.run_until_complete(
+                self._get_project_path_for_task_async(task)
+            )
+        except RuntimeError:
+            project_path = self._regex_detect_project_path(task)
+            if project_path:
+                return project_path
+            return self._fallback_recent_project()
+
+    def _regex_detect_project_path(self, task) -> Optional[str]:
+        """DEPRECATED: Regex-based project path detection. Use AI-first instead."""
         import re
 
         project_path = None
 
-        # PRIORITY 1: Extract from task metadata (resumption tasks)
-        if hasattr(task, 'metadata') and task.metadata:
-            if isinstance(task.metadata, dict):
-                project_path = task.metadata.get('project_path')
-
-        # PRIORITY 2: Extract from task description
-        if not project_path and task.description:
+        # Extract from task description
+        if task.description:
             # Look for explicit project path mentions
             path_match = re.search(r'(?:Project Path:|Project:)\s*(/workspace/[\w\-]+)', task.description)
             if path_match:
-                project_path = path_match.group(1)
-            else:
-                # Look for any workspace path
-                path_match = re.search(r'/workspace/([\w\-]+)', task.description)
-                if path_match:
-                    project_path = f"/workspace/{path_match.group(1)}"
+                return path_match.group(1)
 
-        # PRIORITY 3: Extract from task result
-        if not project_path and hasattr(task, 'result') and task.result and isinstance(task.result, str):
+            # Look for any workspace path
+            path_match = re.search(r'/workspace/([\w\-]+)', task.description)
+            if path_match:
+                return f"/workspace/{path_match.group(1)}"
+
+        # Extract from task result
+        if hasattr(task, 'result') and task.result and isinstance(task.result, str):
             path_match = re.search(r'/workspace/([\w\-]+)', task.result)
             if path_match:
-                project_path = f"/workspace/{path_match.group(1)}"
+                return f"/workspace/{path_match.group(1)}"
 
-        # PRIORITY 4: Find most recently modified project
-        if not project_path:
-            workspace = Path("/workspace")
-            if workspace.exists():
-                projects = [
-                    p for p in workspace.iterdir()
-                    if p.is_dir() and not p.name.startswith('.')
-                    and ((p / "package.json").exists() or (p / "requirements.txt").exists() or (p / ".clopus").exists())
-                ]
-                if projects:
-                    # Sort by modification time, most recent first
-                    projects.sort(key=lambda p: p.stat().st_mtime, reverse=True)
-                    project_path = str(projects[0])
-                    logger.debug(f"Auto-detected project for task: {project_path}")
+        return None
 
-        # Fallback to workspace root
-        if not project_path:
-            project_path = "/workspace"
-
-        return project_path
+    def _fallback_recent_project(self) -> str:
+        """Find most recently modified project."""
+        workspace = Path("/workspace")
+        if workspace.exists():
+            projects = [
+                p for p in workspace.iterdir()
+                if p.is_dir() and not p.name.startswith('.')
+                and ((p / "package.json").exists() or (p / "requirements.txt").exists() or (p / ".clopus").exists())
+            ]
+            if projects:
+                projects.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+                return str(projects[0])
+        return "/workspace"
 
     # =========================================================================
     # ARTIFACT VERIFICATION

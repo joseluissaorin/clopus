@@ -19,7 +19,13 @@ logger = logging.getLogger("clopus.skills_engine")
 
 
 class SkillsEngine:
-    """Manage CLOPUS skills."""
+    """
+    Manage CLOPUS skills.
+
+    NEW IN v3.2: AI-First Skill Matching
+    - Uses AI-first engine for semantic skill matching
+    - Falls back to keyword matching when AI unavailable
+    """
 
     def __init__(
         self,
@@ -39,6 +45,14 @@ class SkillsEngine:
 
         # Cache of loaded skills
         self._skills_cache: Dict[str, Dict] = {}
+
+        # AI-First Engine for semantic skill matching (set by orchestrator, NEW in v3.2)
+        self.ai_engine = None
+
+    def set_ai_engine(self, ai_engine) -> None:
+        """Set the AI-first engine for semantic skill matching."""
+        self.ai_engine = ai_engine
+        logger.info("AI-First Engine connected to skills engine")
 
     async def discover_skills(self) -> List[Dict]:
         """Discover all available skills."""
@@ -120,8 +134,43 @@ class SkillsEngine:
         return None
 
     async def search_skills(self, query: str) -> List[Dict]:
-        """Search skills by name, description, or tags."""
+        """
+        Search skills by name, description, or tags.
+
+        NEW IN v3.2: AI-First approach
+        Priority:
+        1. AI-First Engine (semantic matching)
+        2. Keyword matching (deprecated fallback)
+        """
         all_skills = await self.discover_skills()
+
+        # Try AI-First Engine for semantic matching
+        if self.ai_engine:
+            try:
+                result = await self.ai_engine.match_skills(query, all_skills)
+                if result.success and result.result:
+                    matched_skills = result.result.get("matched_skills", [])
+                    skill_names = [s.get("name") for s in matched_skills]
+
+                    # Order all_skills by matched order
+                    ordered = []
+                    for name in skill_names:
+                        for skill in all_skills:
+                            if skill["name"] == name:
+                                ordered.append(skill)
+                                break
+
+                    if ordered:
+                        logger.debug(f"AI-first matched {len(ordered)} skills for '{query[:50]}'")
+                        return ordered
+            except Exception as e:
+                logger.debug(f"AI-first skill matching failed: {e}")
+
+        # Fallback to keyword matching (deprecated)
+        return self._keyword_search_skills(query, all_skills)
+
+    def _keyword_search_skills(self, query: str, all_skills: List[Dict]) -> List[Dict]:
+        """DEPRECATED: Keyword-based skill search. Use AI-first instead."""
         query_lower = query.lower()
 
         matches = []

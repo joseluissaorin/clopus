@@ -3,14 +3,28 @@
 # =============================================================================
 """
 Breaks down objectives into executable tasks with dependencies.
-Assigns appropriate worker roles and priorities.
+
+NEW IN v3.1: AI-First Planning
+- Uses Claude Code intelligence to analyze ANY objective
+- Generates custom tasks tailored to specific requirements
+- Supports multi-project objectives
+- Falls back to templates only when AI is unavailable
+
+NEW IN v3.2: AI-First Dependency Analysis
+- Uses AI intelligence for semantic dependency detection
+- Falls back to explicit dependencies when AI unavailable
+
+The template-based approach is DEPRECATED and only used as fallback.
 """
 
 import asyncio
 import uuid
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Tuple, TYPE_CHECKING
 from dataclasses import dataclass, field
 import logging
+
+if TYPE_CHECKING:
+    from .ai_first import AIFirstEngine
 
 logger = logging.getLogger("clopus.task_planner")
 
@@ -30,18 +44,47 @@ class PlannedTask:
 
 
 class TaskPlanner:
-    """Plan and decompose objectives into tasks."""
+    """
+    Plan and decompose objectives into tasks.
+
+    AI-FIRST APPROACH:
+    This planner now primarily uses Claude Code intelligence to:
+    1. Analyze objectives without pattern matching
+    2. Generate custom project structures
+    3. Create tailored tasks for ANY type of objective
+    4. Support multi-project objectives
+
+    NEW IN v3.2: AI-First Dependency Analysis
+    - Uses AI intelligence for semantic dependency detection
+    - Falls back to explicit dependencies when AI unavailable
+
+    The template-based approach is kept ONLY as a fallback when AI is unavailable.
+    """
 
     def __init__(self, memory_client, confidence_engine, objective_parser):
         self.memory = memory_client
         self.confidence = confidence_engine
         self.parser = objective_parser
 
+        # AI Planner - PRIMARY approach (set by orchestrator)
+        self.ai_planner = None
+
+        # AI-First Engine (set by orchestrator, NEW in v3.2)
+        self.ai_engine: Optional["AIFirstEngine"] = None
+
         # Skills engine and template extractor (set by orchestrator)
         self.skills_engine = None
         self.template_extractor = None
 
-        # Standard task patterns for common project types
+        # Worker pool for AI planning (set by orchestrator)
+        self.worker_pool = None
+
+    def set_ai_engine(self, ai_engine: "AIFirstEngine") -> None:
+        """Set the AI-first engine for intelligent dependency analysis."""
+        self.ai_engine = ai_engine
+        logger.info("AI-First Engine connected to task planner")
+
+        # DEPRECATED: Template-based patterns (kept for fallback only)
         self.project_templates = {
             "todo_app": self._todo_app_tasks,
             "api": self._api_tasks,
@@ -67,10 +110,109 @@ class TaskPlanner:
         # Design system for creating design tasks
         self.design_system = None
 
+    def set_worker_pool(self, worker_pool) -> None:
+        """Set worker pool for AI planning."""
+        self.worker_pool = worker_pool
+        logger.info("Worker pool connected to task planner")
+
+    def set_ai_planner(self, ai_planner) -> None:
+        """Set the AI planner for intelligent task generation."""
+        self.ai_planner = ai_planner
+        logger.info("AI Planner connected - using AI-first task generation")
+
     async def plan(self, objective_id: str, parsed_objective: Dict) -> List[Dict]:
-        """Create a task plan for an objective."""
+        """
+        Create a task plan for an objective.
+
+        PRIMARY: Uses AI Planner for intelligent task generation
+        FALLBACK: Uses templates only when AI is unavailable
+        """
         logger.info(f"Planning tasks for objective: {objective_id}")
 
+        # Get the original objective text
+        original_objective = parsed_objective.get("original", "")
+        if not original_objective:
+            original_objective = parsed_objective.get("description", "")
+            if not original_objective:
+                original_objective = parsed_objective.get("summary", "")
+
+        # =====================================================================
+        # AI-FIRST PLANNING (PRIMARY APPROACH)
+        # =====================================================================
+        if self.ai_planner or self.worker_pool:
+            try:
+                logger.info("Using AI-first planning approach")
+                tasks = await self._plan_with_ai(objective_id, original_objective, parsed_objective)
+                if tasks:
+                    logger.info(f"AI planning generated {len(tasks)} tasks")
+                    return tasks
+                logger.warning("AI planning returned no tasks, falling back to templates")
+            except Exception as e:
+                logger.error(f"AI planning failed: {e}, falling back to templates")
+
+        # =====================================================================
+        # FALLBACK: Template-based planning (DEPRECATED)
+        # =====================================================================
+        logger.warning("Using DEPRECATED template-based planning - AI planner unavailable")
+        return await self._plan_with_templates(objective_id, parsed_objective)
+
+    async def _plan_with_ai(
+        self,
+        objective_id: str,
+        objective_text: str,
+        parsed_objective: Dict
+    ) -> List[Dict]:
+        """
+        Use AI Planner for intelligent task generation.
+
+        This is the PRIMARY approach that uses Claude Code intelligence.
+        """
+        # Initialize AI planner if needed
+        if not self.ai_planner and self.worker_pool:
+            from .ai_planner import AIPlanner
+            self.ai_planner = AIPlanner(self.worker_pool, self.memory)
+            logger.info("Initialized AI Planner on-demand")
+
+        if not self.ai_planner:
+            return []
+
+        # Let AI analyze the objective and generate projects + tasks
+        projects, ai_tasks = await self.ai_planner.plan_objective(
+            objective_text,
+            objective_id
+        )
+
+        if not ai_tasks:
+            return []
+
+        # Convert AI tasks to the expected format
+        from .ai_planner import convert_ai_tasks_to_planned_tasks
+        task_dicts = convert_ai_tasks_to_planned_tasks(ai_tasks, projects)
+
+        # Store project information in parsed_objective for other systems
+        parsed_objective["_ai_projects"] = [
+            {
+                "id": p.id,
+                "name": p.name,
+                "path": p.path,
+                "technologies": p.technologies,
+                "depends_on": p.depends_on
+            }
+            for p in projects
+        ]
+
+        return task_dicts
+
+    async def _plan_with_templates(
+        self,
+        objective_id: str,
+        parsed_objective: Dict
+    ) -> List[Dict]:
+        """
+        DEPRECATED: Template-based planning.
+
+        Only used as fallback when AI planner is unavailable.
+        """
         project_type = parsed_objective.get("project_type", "custom")
         technologies = parsed_objective.get("technologies", [])
         features = parsed_objective.get("features", [])
@@ -187,11 +329,50 @@ class TaskPlanner:
         }
 
     def _resolve_dependencies(self, tasks: List[PlannedTask]) -> List[PlannedTask]:
-        """Ensure dependencies are properly ordered.
+        """
+        Ensure dependencies are properly ordered.
+
+        NEW IN v3.2: AI-First approach
+        Priority:
+        1. AI-First Engine (semantic dependency analysis)
+        2. Explicit dependencies with cycle detection (fallback)
 
         Detects and handles circular dependencies by removing the problematic
         dependency links.
         """
+        # Try AI-First Engine for semantic dependency analysis
+        if self.ai_engine:
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    # We're in an async context, fall back to explicit
+                    pass
+                else:
+                    task_data = [
+                        {"id": t.id, "title": t.title, "description": t.description[:200]}
+                        for t in tasks
+                    ]
+                    result = loop.run_until_complete(
+                        self.ai_engine.analyze_task_dependencies(task_data)
+                    )
+                    if result.success and result.result:
+                        dependency_graph = result.result.get("dependency_graph", {})
+                        if dependency_graph:
+                            # Update task dependencies from AI analysis
+                            for task in tasks:
+                                ai_deps = dependency_graph.get(task.id, [])
+                                if ai_deps:
+                                    # Merge AI-detected deps with explicit deps
+                                    task.dependencies = list(set(task.dependencies + ai_deps))
+                            logger.debug(f"AI-first analyzed dependencies for {len(tasks)} tasks")
+            except Exception as e:
+                logger.debug(f"AI-first dependency analysis failed: {e}")
+
+        # Continue with explicit dependency resolution
+        return self._explicit_resolve_dependencies(tasks)
+
+    def _explicit_resolve_dependencies(self, tasks: List[PlannedTask]) -> List[PlannedTask]:
+        """DEPRECATED: Explicit dependency resolution. Use AI-first instead."""
         # Build dependency graph
         task_map = {t.id: t for t in tasks}
 
