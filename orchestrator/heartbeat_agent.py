@@ -394,25 +394,43 @@ Analyze carefully and be thorough. Check:
         state: ProjectState,
         prompt: str
     ) -> GapAnalysis:
-        """Dispatch gap analysis to a Claude Code worker."""
+        """
+        Dispatch gap analysis to the dedicated heartbeat worker.
 
-        # Find an idle researcher worker
-        worker_id = None
-        for wid, worker in self.worker_pool.workers.items():
-            if worker.get("role") == "researcher" and worker.get("status") == "idle":
-                worker_id = wid
-                break
+        The heartbeat worker (worker-7) is reserved exclusively for heartbeat
+        analysis tasks. It is never assigned regular tasks by the task planner.
+        This ensures the heartbeat agent can always run its analysis without
+        depending on other workers' availability.
+        """
 
-        # If no researcher available, use any idle worker
-        if worker_id is None:
-            for wid, worker in self.worker_pool.workers.items():
-                if worker.get("status") == "idle":
-                    worker_id = wid
-                    break
+        # Always use the dedicated heartbeat worker
+        worker_id = self.worker_pool.get_heartbeat_worker_id()
 
         if worker_id is None:
-            logger.warning("No idle workers available for gap analysis")
-            raise RuntimeError("No idle workers available")
+            logger.error("No dedicated heartbeat worker configured!")
+            raise RuntimeError("No heartbeat worker available")
+
+        # Check if heartbeat worker is available
+        worker = self.worker_pool.workers.get(worker_id)
+        if not worker:
+            logger.error(f"Heartbeat worker {worker_id} not found in pool")
+            raise RuntimeError("Heartbeat worker not in pool")
+
+        # If the heartbeat worker is busy, wait for it to finish
+        max_wait = 120  # 2 minutes max wait
+        wait_interval = 5
+        waited = 0
+
+        while worker.get("status") == "busy" and waited < max_wait:
+            logger.info(f"Heartbeat worker busy, waiting... ({waited}/{max_wait}s)")
+            await asyncio.sleep(wait_interval)
+            waited += wait_interval
+            # Collect any completed results to free up the worker
+            await self.worker_pool.collect_results()
+
+        if worker.get("status") != "idle":
+            logger.warning(f"Heartbeat worker still busy after {max_wait}s wait")
+            raise RuntimeError("Heartbeat worker timeout")
 
         # Create a unique task ID for this analysis
         task_id = f"heartbeat-{uuid.uuid4().hex[:8]}"

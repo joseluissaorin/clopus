@@ -167,6 +167,21 @@ services:
       WORKER_ROLE: designer
       IPC_PATH: /app/ipc
 
+  # Dedicated Heartbeat Worker (Completion Guardian)
+  # This worker is RESERVED for heartbeat analysis tasks only.
+  # It runs independently and is never assigned regular tasks.
+  worker-7:
+    <<: *worker-common
+    container_name: clopus-worker-7
+    environment:
+      <<: *common-env
+      WORKER_ID: 7
+      WORKER_ROLE: heartbeat
+      IPC_PATH: /app/ipc
+      # Heartbeat-specific settings
+      HEARTBEAT_WORKER: "true"
+      ANALYSIS_TIMEOUT: 120
+
   # ===========================================================================
   # TIER 1: CORE SERVICES (Always Running)
   # ===========================================================================

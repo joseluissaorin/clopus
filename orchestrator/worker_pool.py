@@ -141,6 +141,38 @@ class WorkerPool:
         logger.info(f"Dispatched task {task_id} to worker {worker_id}")
         return True
 
+    def is_reserved_role(self, role: str) -> bool:
+        """Check if a role is reserved (not for regular task assignment)."""
+        reserved = getattr(self.config, 'reserved_roles', ['heartbeat'])
+        return role in reserved
+
+    def get_heartbeat_worker_id(self) -> Optional[int]:
+        """Get the dedicated heartbeat worker ID."""
+        for worker_id, worker in self.workers.items():
+            if worker["role"] == "heartbeat":
+                return worker_id
+        return None
+
+    async def get_idle_workers(self, role: Optional[str] = None, include_reserved: bool = False) -> List[Dict]:
+        """
+        Get list of idle workers.
+
+        Args:
+            role: Filter by specific role
+            include_reserved: If True, include reserved roles like heartbeat
+        """
+        idle = []
+
+        for worker_id, worker in self.workers.items():
+            if worker["status"] == "idle":
+                # Skip reserved roles unless explicitly included
+                if not include_reserved and self.is_reserved_role(worker["role"]):
+                    continue
+                if role is None or worker["role"] == role:
+                    idle.append(worker)
+
+        return idle
+
     async def _build_task_prompt(
         self,
         title: str,
@@ -156,6 +188,9 @@ class WorkerPool:
             "reviewer": "You are reviewing code. Check for bugs, security issues, and best practices. Verify that code follows the design system documented in .clopus/design/.",
             "researcher": "You are researching. Find relevant information, docs, and solutions.",
             "debugger": "You are debugging. Identify root causes and implement fixes.",
+            "heartbeat": """You are the Completion Guardian. Your task is to analyze a project and identify gaps between the stated objective and current implementation.
+
+Write your analysis to the file specified in the task. Be thorough - check every requirement, every endpoint, every test. This is critical for ensuring project quality.""",
             "designer": """You are the Design Lead for this project. Your responsibilities:
 
 1. CREATE COMPREHENSIVE DESIGN DOCUMENTATION:
@@ -315,16 +350,6 @@ Always output your design decisions to .clopus/design/DESIGN_SYSTEM.md""",
 
         return stale_workers
 
-    async def get_idle_workers(self, role: Optional[str] = None) -> List[Dict]:
-        """Get list of idle workers."""
-        idle = []
-
-        for worker_id, worker in self.workers.items():
-            if worker["status"] == "idle":
-                if role is None or worker["role"] == role:
-                    idle.append(worker)
-
-        return idle
 
     async def get_worker_status(self, worker_id: int) -> Optional[Dict]:
         """Get status of a specific worker."""

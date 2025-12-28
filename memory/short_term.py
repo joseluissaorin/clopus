@@ -428,15 +428,38 @@ class ShortTermMemory:
                 return self._row_to_worker(row)
         return None
 
-    async def get_idle_workers(self, role: Optional[str] = None) -> List[Worker]:
-        """Get idle workers, optionally filtered by role."""
+    async def get_idle_workers(
+        self,
+        role: Optional[str] = None,
+        exclude_reserved: bool = True
+    ) -> List[Worker]:
+        """
+        Get idle workers, optionally filtered by role.
+
+        Args:
+            role: Filter by specific role. If provided, only workers with this role.
+            exclude_reserved: If True (default), excludes reserved roles like 'heartbeat'
+                             from the results when getting any idle worker (role=None).
+                             This prevents reserved workers from being assigned regular tasks.
+        """
+        # Reserved roles that should not be assigned regular tasks
+        reserved_roles = ['heartbeat']
+
         conn = await self._get_connection()
         if role:
+            # When a specific role is requested, return workers with that role
+            # (even if it's a reserved role - caller explicitly requested it)
             query = "SELECT * FROM workers WHERE status = 'idle' AND role = ?"
             params = (role,)
         else:
-            query = "SELECT * FROM workers WHERE status = 'idle'"
-            params = ()
+            # When getting "any" idle worker, exclude reserved roles by default
+            if exclude_reserved and reserved_roles:
+                placeholders = ','.join('?' * len(reserved_roles))
+                query = f"SELECT * FROM workers WHERE status = 'idle' AND role NOT IN ({placeholders})"
+                params = tuple(reserved_roles)
+            else:
+                query = "SELECT * FROM workers WHERE status = 'idle'"
+                params = ()
 
         async with conn.execute(query, params) as cursor:
             rows = await cursor.fetchall()

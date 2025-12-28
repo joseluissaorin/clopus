@@ -20,7 +20,7 @@ auth:
 # Worker Configuration
 # =============================================================================
 workers:
-  count: 6
+  count: 7  # 6 regular workers + 1 dedicated heartbeat
   model: "claude-sonnet-4-20250514"
   roles:
     - coder
@@ -29,6 +29,9 @@ workers:
     - researcher
     - debugger
     - designer
+    - heartbeat  # Dedicated worker for completion guardian
+  reserved_roles:
+    - heartbeat  # Never assigned regular tasks
   max_concurrent_tasks: 3
   poll_interval_ms: 500
   ipc_path: "./ipc/tasks"
