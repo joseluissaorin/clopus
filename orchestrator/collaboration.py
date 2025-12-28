@@ -16,7 +16,25 @@ from typing import Any, Dict, List, Optional
 from dataclasses import dataclass, field
 from enum import Enum
 
+# Import MemoryType for proper type conversion
+try:
+    from memory.long_term import MemoryType
+except ImportError:
+    MemoryType = None
+
 logger = logging.getLogger("clopus.collaboration")
+
+# Map learning types from workers to valid MemoryType values
+LEARNING_TYPE_MAP = {
+    "pattern": "pattern",
+    "solution": "solution",
+    "warning": "error_fix",
+    "api_endpoint": "api",
+    "design_token": "learning",
+    "error_fix": "error_fix",
+    "learning": "learning",
+    "tip": "learning",
+}
 
 
 class RequestType(str, Enum):
@@ -527,20 +545,33 @@ Return JSON with:
     async def _handle_share_learning(self, event: CollaborationEvent) -> None:
         """Handle a share_learning event - store in memory."""
         payload = event.payload
-        learning_type = payload.get("learning_type", "pattern")
+        raw_type = payload.get("learning_type", "pattern")
         content = payload.get("content", "")
         metadata = payload.get("metadata", {})
+
+        # Map learning type to valid MemoryType
+        memory_type_str = LEARNING_TYPE_MAP.get(raw_type, "learning")
+
+        # Convert to MemoryType enum if available
+        if MemoryType:
+            try:
+                memory_type = MemoryType(memory_type_str)
+            except ValueError:
+                memory_type = MemoryType.LEARNING
+        else:
+            memory_type = memory_type_str
 
         # Store in long-term memory
         try:
             await self.memory.long_term.store(
                 content=content,
-                memory_type=learning_type,
+                memory_type=memory_type,
                 metadata={
                     **metadata,
                     "from_role": event.from_role,
                     "from_worker_id": event.from_worker_id,
                     "shared_at": event.created_at,
+                    "original_type": raw_type,
                 }
             )
             logger.info(f"Stored shared learning from {event.from_role}: {content[:100]}...")
