@@ -370,8 +370,8 @@ $TASK_PROMPT"
 
         echo "$RESULT_JSON" > "$IPC_PATH/tasks/$WORKER_ID/result.json"
 
-        # Remove pending task
-        rm "$PENDING_FILE"
+        # Remove pending task (use -f to avoid failure if already removed)
+        rm -f "$PENDING_FILE"
 
         # Update status to idle
         echo "{\"status\": \"idle\", \"role\": \"$WORKER_ROLE\", \"model\": \"$CLAUDE_MODEL\", \"last_task\": \"$TASK_ID\", \"last_session\": \"$SESSION_ID\", \"updated_at\": \"$(date -Iseconds)\", \"started_at\": \"$STARTED_AT\"}" > "$IPC_PATH/tasks/$WORKER_ID/status.json"

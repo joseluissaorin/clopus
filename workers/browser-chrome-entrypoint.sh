@@ -24,6 +24,10 @@ mkdir -p "$IPC_DIR"
 # Start Virtual Display (Xvfb)
 # =============================================================================
 echo "[Chrome Worker $WORKER_ID] Starting Xvfb on display :99..."
+
+# Clean up stale X server lock files from previous runs
+rm -f /tmp/.X99-lock /tmp/.X11-unix/X99 2>/dev/null || true
+
 Xvfb :99 -screen 0 1920x1080x24 &
 export DISPLAY=:99
 sleep 2
