@@ -417,7 +417,8 @@ Analyze carefully and be thorough. Check:
             raise RuntimeError("Heartbeat worker not in pool")
 
         # If the heartbeat worker is busy, wait for it to finish
-        max_wait = 120  # 2 minutes max wait
+        # Comprehensive analysis can take 5+ minutes for large projects
+        max_wait = 300  # 5 minutes max wait
         wait_interval = 5
         waited = 0
 
@@ -450,7 +451,8 @@ Analyze carefully and be thorough. Check:
         result_file = self.ipc_path / "tasks" / str(worker_id) / "result.json"
         analysis_file = Path(project_path) / ".clopus" / "heartbeat_analysis.json"
 
-        timeout = 120  # 2 minutes
+        # Comprehensive analysis takes time - allow 5 minutes for large projects
+        timeout = 300  # 5 minutes
         start_time = datetime.now()
 
         while (datetime.now() - start_time).total_seconds() < timeout:

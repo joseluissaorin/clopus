@@ -186,6 +186,14 @@ class Orchestrator:
         self.capability_installer = CapabilityInstaller(self.worker_pool)
         logger.info("Capability installer initialized")
 
+        # Initialize project state manager (needed by heartbeat agent)
+        self.state_manager = get_state_manager(self.settings.workspace_path)
+        logger.info("Project state manager initialized")
+
+        # Initialize design system
+        self.design_system = get_design_system(self.memory)
+        logger.info("Design system initialized")
+
         # Initialize heartbeat agent (completion guardian)
         # Uses worker dispatch (OAuth) instead of direct API calls
         heartbeat_interval = self.settings.heartbeat_config.interval_seconds if hasattr(self.settings, 'heartbeat_config') else 300
@@ -202,14 +210,6 @@ class Orchestrator:
 
         self.knowledge_base = KnowledgeBase(self.memory, "/app/knowledge")
         logger.info("Knowledge base initialized")
-
-        # Initialize design system
-        self.design_system = get_design_system(self.memory)
-        logger.info("Design system initialized")
-
-        # Initialize project state manager
-        self.state_manager = get_state_manager(self.settings.workspace_path)
-        logger.info("Project state manager initialized")
 
         # Initialize resumption generator
         self.resumption_generator = get_resumption_generator(

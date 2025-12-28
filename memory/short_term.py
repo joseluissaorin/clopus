@@ -186,6 +186,16 @@ class ShortTermMemory:
             rows = await cursor.fetchall()
             return [self._row_to_objective(row) for row in rows]
 
+    async def get_objectives_by_status(self, status: ObjectiveStatus) -> List[Objective]:
+        """Get all objectives with a specific status, ordered by priority."""
+        conn = await self._get_connection()
+        async with conn.execute(
+            "SELECT * FROM objectives WHERE status = ? ORDER BY priority DESC, created_at ASC",
+            (_safe_enum_value(status),)
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return [self._row_to_objective(row) for row in rows]
+
     async def update_objective_status(self, objective_id: str, status: ObjectiveStatus) -> None:
         """Update objective status."""
         async with self._lock:
