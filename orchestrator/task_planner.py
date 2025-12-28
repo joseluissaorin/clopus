@@ -8,7 +8,7 @@ Assigns appropriate worker roles and priorities.
 
 import asyncio
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 from dataclasses import dataclass, field
 import logging
 
@@ -185,7 +185,11 @@ class TaskPlanner:
         }
 
     def _resolve_dependencies(self, tasks: List[PlannedTask]) -> List[PlannedTask]:
-        """Ensure dependencies are properly ordered."""
+        """Ensure dependencies are properly ordered.
+
+        Detects and handles circular dependencies by removing the problematic
+        dependency links.
+        """
         # Build dependency graph
         task_map = {t.id: t for t in tasks}
 
@@ -194,21 +198,57 @@ class TaskPlanner:
             if not task.dependencies:
                 task.priority = max(task.priority, 8)  # High priority for no deps
             else:
-                # Priority based on dependency chain depth
-                depth = self._get_dependency_depth(task, task_map)
-                task.priority = max(1, 10 - depth)
+                try:
+                    # Priority based on dependency chain depth
+                    depth = self._get_dependency_depth(task, task_map)
+                    task.priority = max(1, 10 - depth)
+                except ValueError as e:
+                    # Circular dependency detected - log and break the cycle
+                    logger.error(f"Circular dependency detected: {e}")
+                    logger.warning(f"Breaking dependency cycle for task: {task.title}")
+
+                    # Remove the last dependency to break the cycle
+                    if task.dependencies:
+                        removed_dep = task.dependencies.pop()
+                        logger.info(f"Removed dependency {removed_dep} from task {task.id}")
+
+                    # Set moderate priority since we can't calculate depth
+                    task.priority = 5
 
         return sorted(tasks, key=lambda t: (-t.priority, len(t.dependencies)))
 
-    def _get_dependency_depth(self, task: PlannedTask, task_map: Dict) -> int:
-        """Get the depth of dependencies."""
+    def _get_dependency_depth(self, task: PlannedTask, task_map: Dict, visited: Optional[set] = None) -> int:
+        """Get the depth of dependencies with cycle detection.
+
+        Args:
+            task: The task to calculate depth for
+            task_map: Map of task IDs to PlannedTask objects
+            visited: Set of already visited task IDs (for cycle detection)
+
+        Returns:
+            The maximum depth of the dependency chain
+
+        Raises:
+            ValueError: If a circular dependency is detected
+        """
+        if visited is None:
+            visited = set()
+
+        # Detect circular dependency
+        if task.id in visited:
+            raise ValueError(f"Circular dependency detected involving task: {task.id} ({task.title})")
+
         if not task.dependencies:
             return 0
+
+        # Add current task to visited set
+        visited.add(task.id)
 
         max_depth = 0
         for dep_id in task.dependencies:
             if dep_id in task_map:
-                depth = self._get_dependency_depth(task_map[dep_id], task_map)
+                # Pass a copy of visited set to allow parallel branches
+                depth = self._get_dependency_depth(task_map[dep_id], task_map, visited.copy())
                 max_depth = max(max_depth, depth + 1)
 
         return max_depth

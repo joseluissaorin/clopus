@@ -201,6 +201,74 @@ services:
       VERIFICATOR_WORKER: "true"
       VERIFICATION_TIMEOUT: 60
 
+  # Browser Worker - Headless Playwright
+  # Uses Playwright MCP for headless browser automation
+  worker-9:
+    <<: *worker-common
+    container_name: clopus-worker-9
+    environment:
+      <<: *common-env
+      WORKER_ID: 9
+      WORKER_ROLE: browser-headless
+      IPC_PATH: /app/ipc
+      BROWSER_WORKER: "true"
+      PLAYWRIGHT_BROWSERS_PATH: /home/ubuntu/.cache/ms-playwright
+      BROWSER_MODE: headless
+
+  # Browser Worker - Chrome with Claude Extension (VNC)
+  # Uses Google Chrome with Claude in Chrome extension for visual automation
+  worker-10:
+    build:
+      context: .
+      dockerfile: Dockerfile.browser-chrome
+    container_name: clopus-worker-10
+    volumes:
+      - workspace:/workspace
+      - claude-auth:/home/ubuntu/.claude-host:ro
+      - gh-config:/home/ubuntu/.config/gh:ro
+      - ssh-keys:/home/ubuntu/.ssh:ro
+      - ipc:/app/ipc
+      - ./skills:/app/skills:ro
+      - ./workers/system-prompts:/app/system-prompts:ro
+      - ./workers/hooks:/app/hooks:ro
+      - mcp-servers:/app/mcp-servers:ro
+      - ./workers/.mcp.json:/workspace/.mcp.json:ro
+      - chrome-profile:/home/ubuntu/.config/google-chrome
+    environment:
+      <<: *common-env
+      WORKER_ID: 10
+      WORKER_ROLE: browser-chrome
+      IPC_PATH: /app/ipc
+      BROWSER_WORKER: "true"
+      BROWSER_MODE: vnc
+      DISPLAY: ":99"
+    ports:
+      - "6280:6080"  # noVNC for worker-10
+      - "5920:5900"  # VNC for worker-10
+    shm_size: '2gb'
+    depends_on:
+      - chromadb
+      - redis
+    networks:
+      - clopus-network
+    restart: unless-stopped
+
+  # Services Integration Worker
+  # Handles external service integrations: Gmail, Calendar, Slack, etc.
+  worker-11:
+    <<: *worker-common
+    container_name: clopus-worker-11
+    environment:
+      <<: *common-env
+      WORKER_ID: 11
+      WORKER_ROLE: services
+      IPC_PATH: /app/ipc
+      SERVICES_WORKER: "true"
+      # Gmail OAuth credentials
+      GMAIL_CREDENTIALS: /home/ubuntu/.config/gmail/credentials.json
+      # Firecrawl API key
+      FIRECRAWL_API_KEY: ${FIRECRAWL_API_KEY:-}
+
   # ===========================================================================
   # TIER 1: CORE SERVICES (Always Running)
   # ===========================================================================
@@ -524,6 +592,7 @@ volumes:
 
   # Browser
   browser-profiles:
+  chrome-profile:
 
   # Monitoring
   prometheus-data:

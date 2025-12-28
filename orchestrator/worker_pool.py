@@ -57,6 +57,8 @@ class WorkerPool:
             pending_file = worker_dir / "pending.json"
             result_file = worker_dir / "result.json"
             cancel_file = worker_dir / "cancel"
+            ack_file = worker_dir / "ack.json"
+            collected_file = worker_dir / "result.collected"
 
             if pending_file.exists():
                 pending_file.unlink()
@@ -66,6 +68,10 @@ class WorkerPool:
                 logger.info(f"Cleared stale result for worker {i}")
             if cancel_file.exists():
                 cancel_file.unlink()
+            if ack_file.exists():
+                ack_file.unlink()
+            if collected_file.exists():
+                collected_file.unlink()
 
             # Register worker
             worker = await self.memory.register_worker(i, role)
@@ -101,9 +107,24 @@ class WorkerPool:
         description: Optional[str] = None,
         cwd: str = "/workspace",
         relevant_skills: Optional[List[Dict]] = None,
-        memory_context: Optional[str] = None
+        memory_context: Optional[str] = None,
+        ack_timeout: int = 10
     ) -> bool:
-        """Dispatch a task to a worker."""
+        """Dispatch a task to a worker with acknowledgment handshake.
+
+        Args:
+            worker_id: The worker to dispatch to
+            task_id: The task ID
+            title: Task title
+            description: Task description
+            cwd: Working directory for the task
+            relevant_skills: Optional list of relevant skills
+            memory_context: Optional memory context
+            ack_timeout: Seconds to wait for worker acknowledgment (default 10)
+
+        Returns:
+            True if task was acknowledged by worker, False otherwise
+        """
         if worker_id not in self.workers:
             logger.error(f"Worker {worker_id} not found")
             return False
@@ -132,18 +153,47 @@ class WorkerPool:
         }
 
         pending_file = worker["ipc_dir"] / "pending.json"
+        ack_file = worker["ipc_dir"] / "ack.json"
+
+        # Remove stale ack file if exists
+        if ack_file.exists():
+            ack_file.unlink()
+
+        # Write task
         pending_file.write_text(json.dumps(task_data, indent=2))
+        logger.debug(f"Wrote pending task {task_id} for worker {worker_id}")
 
-        # Update worker state
-        worker["status"] = "busy"
-        worker["current_task"] = task_id
+        # Wait for acknowledgment with timeout
+        start_time = datetime.now()
+        while (datetime.now() - start_time).total_seconds() < ack_timeout:
+            if ack_file.exists():
+                try:
+                    ack_data = json.loads(ack_file.read_text())
+                    if ack_data.get("task_id") == task_id:
+                        # Worker acknowledged the task
+                        worker["status"] = "busy"
+                        worker["current_task"] = task_id
+                        logger.info(f"Task {task_id} acknowledged by worker {worker_id}")
+                        return True
+                except json.JSONDecodeError:
+                    pass
+            await asyncio.sleep(0.1)
 
-        logger.info(f"Dispatched task {task_id} to worker {worker_id}")
-        return True
+        # Timeout - worker didn't acknowledge
+        logger.warning(f"Worker {worker_id} did not acknowledge task {task_id} within {ack_timeout}s")
+
+        # Clean up pending file
+        if pending_file.exists():
+            pending_file.unlink()
+
+        return False
 
     def is_reserved_role(self, role: str) -> bool:
         """Check if a role is reserved (not for regular task assignment)."""
-        reserved = getattr(self.config, 'reserved_roles', ['heartbeat'])
+        reserved = getattr(
+            self.config, 'reserved_roles',
+            ['heartbeat', 'verificator', 'browser-headless', 'browser-chrome', 'services']
+        )
         return role in reserved
 
     def get_heartbeat_worker_id(self) -> Optional[int]:
@@ -244,6 +294,118 @@ TASK TYPES:
    Output: {"matches": true/false, "coverage": 0.0-1.0, "gaps": ["missing feature X"], "reasoning": "..."}
 
 ALWAYS respond with valid JSON only. No markdown, no explanation outside JSON.""",
+
+            "browser-headless": """You are the Headless Browser Automation specialist using Playwright MCP.
+
+Your role is to automate browser interactions for:
+- Web scraping and data extraction
+- Form filling and submission
+- Website testing and validation
+- Screenshot capture
+- PDF generation
+
+## Tools Available (via Playwright MCP)
+- Navigate to URLs
+- Click elements using selectors
+- Fill input fields
+- Extract text content
+- Take screenshots
+- Evaluate JavaScript
+- Handle authentication
+
+## Best Practices
+1. Always wait for elements before interacting
+2. Use robust selectors (prefer data-testid, id, then CSS)
+3. Handle popups, modals, and cookie banners gracefully
+4. Respect rate limits and robots.txt
+5. Return extracted data in structured JSON format
+6. Take screenshots as evidence of completed actions
+
+## Output Format
+Always return results as JSON:
+{
+    "success": true/false,
+    "data": {...extracted data...},
+    "screenshots": ["path/to/screenshot.png"],
+    "error": null or "error message"
+}""",
+
+            "browser-chrome": """You are the Chrome Browser Automation specialist with the Claude in Chrome extension.
+
+Your role is to perform complex browser interactions that benefit from visual control:
+- OAuth authentication flows
+- Multi-step form wizards
+- Interactive web applications
+- Visual verification tasks
+- Tasks requiring human-like interaction patterns
+
+## Unique Capabilities
+- Google Chrome with all extensions
+- Claude in Chrome extension for collaborative browsing
+- Full VNC access for visual debugging
+- Persistent browser profiles for session management
+- Can handle CAPTCHAs and complex auth flows
+
+## Tools Available
+- All Playwright MCP tools
+- Direct Chrome DevTools access
+- Extension-based interactions
+- Cookie and session management
+
+## Best Practices
+1. Use visual verification when text extraction is unreliable
+2. Leverage the Claude extension for complex decision-making
+3. Save session cookies for repeated authentication
+4. Take screenshots at each step for audit trail
+5. Handle OAuth flows by preserving browser state
+
+## VNC Access
+Users can view your browser at:
+- noVNC: http://localhost:6280
+- VNC: localhost:5920""",
+
+            "services": """You are the Services Integration specialist responsible for external service automation.
+
+Your role is to integrate with external services via MCP servers for:
+- Email automation (Gmail MCP)
+- Web scraping (Firecrawl MCP)
+- Calendar management
+- Messaging platforms (Slack, Discord)
+- Payment processing
+- Cloud services
+
+## Available MCPs
+
+### Gmail MCP
+- Read, send, and manage emails
+- Search emails by query
+- Create drafts
+- Manage labels
+- Send with attachments
+
+### Firecrawl MCP
+- Advanced web scraping
+- JavaScript rendering
+- Structured data extraction
+- Batch URL processing
+
+## Best Practices
+1. Handle API rate limits gracefully with exponential backoff
+2. Log all external interactions for audit trail
+3. Return structured data for downstream tasks
+4. Respect user privacy and data handling policies
+5. Validate responses before returning
+6. Store credentials securely in environment variables
+
+## Output Format
+Always return results as JSON:
+{
+    "success": true/false,
+    "service": "gmail"/"firecrawl"/etc,
+    "action": "send_email"/"scrape_url"/etc,
+    "result": {...},
+    "error": null or "error message"
+}""",
         }
 
         instruction = role_instructions.get(role, role_instructions["coder"])
@@ -309,7 +471,10 @@ ALWAYS respond with valid JSON only. No markdown, no explanation outside JSON.""
         logger.info("Skills engine connected to worker pool")
 
     async def collect_results(self) -> Dict[int, Dict]:
-        """Collect completed task results from workers."""
+        """Collect completed task results from workers using atomic file operations.
+
+        Uses atomic rename to prevent race conditions when reading result files.
+        """
         results = {}
 
         for worker_id, worker in self.workers.items():
@@ -317,14 +482,21 @@ ALWAYS respond with valid JSON only. No markdown, no explanation outside JSON.""
                 continue
 
             result_file = worker["ipc_dir"] / "result.json"
+            collected_file = worker["ipc_dir"] / "result.collected"
 
             if result_file.exists():
                 try:
-                    result_data = json.loads(result_file.read_text())
-                    results[worker_id] = result_data
+                    # Atomic rename to prevent race condition
+                    # If rename succeeds, we own the file exclusively
+                    result_file.rename(collected_file)
 
-                    # Clear result file
-                    result_file.unlink()
+                    # Now safely read the collected file
+                    result_data = json.loads(collected_file.read_text())
+
+                    # Remove the collected file after reading
+                    collected_file.unlink()
+
+                    results[worker_id] = result_data
 
                     # Update worker state
                     worker["status"] = "idle"
@@ -333,8 +505,18 @@ ALWAYS respond with valid JSON only. No markdown, no explanation outside JSON.""
 
                     logger.info(f"Collected result from worker {worker_id}: {result_data.get('task_id')}")
 
+                except FileNotFoundError:
+                    # Another process already collected this result (race condition)
+                    logger.debug(f"Result file for worker {worker_id} was already collected")
+
                 except json.JSONDecodeError as e:
                     logger.error(f"Invalid result JSON from worker {worker_id}: {e}")
+                    # Clean up the corrupt file
+                    if collected_file.exists():
+                        collected_file.unlink()
+
+                except OSError as e:
+                    logger.error(f"OS error collecting result from worker {worker_id}: {e}")
 
         return results
 
@@ -528,8 +710,14 @@ ALWAYS respond with valid JSON only. No markdown, no explanation outside JSON.""
         while worker["status"] != "idle":
             await asyncio.sleep(0.5)
             if (datetime.now() - wait_start).total_seconds() > timeout_seconds:
-                logger.warning("Verificator worker not available within timeout")
-                return None
+                logger.warning(f"Verificator worker not available within {timeout_seconds}s timeout")
+                return {
+                    "error": "worker_busy",
+                    "task_type": task_type,
+                    "timeout_seconds": timeout_seconds,
+                    "retryable": True,
+                    "message": f"Verificator worker was busy for {timeout_seconds} seconds"
+                }
 
         # Build verification prompt
         prompt = self._build_verification_prompt(task_type, task_data)
@@ -578,11 +766,18 @@ ALWAYS respond with valid JSON only. No markdown, no explanation outside JSON.""
 
             await asyncio.sleep(0.5)
 
-        # Timeout
-        logger.warning(f"Verification task {verification_task_id} timed out")
+        # Timeout - return error dict instead of None for retry handling
+        logger.warning(f"Verification task {verification_task_id} timed out after {timeout_seconds}s")
         worker["status"] = "idle"
         worker["current_task"] = None
-        return None
+        return {
+            "error": "timeout",
+            "task_type": task_type,
+            "task_id": verification_task_id,
+            "timeout_seconds": timeout_seconds,
+            "retryable": True,
+            "message": f"Verification task {task_type} timed out after {timeout_seconds} seconds"
+        }
 
     def _build_verification_prompt(self, task_type: str, task_data: Dict[str, Any]) -> str:
         """Build a structured verification prompt."""

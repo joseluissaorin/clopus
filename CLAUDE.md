@@ -52,19 +52,23 @@ USER INPUT (CLI/File/Webhook)
 └─────────────────────────────────────────────────────────┘
          │
          ▼
-┌───────────────────────────────────────────────────────────────────────────────────┐
-│                     WORKER POOL (8 Claude Code Instances)                          │
-│  ┌─────────┐ ┌─────────┐ ┌─────────┐ ┌─────────┐ ┌─────────┐ ┌─────────┐          │
-│  │ CODER   │ │ TESTER  │ │REVIEWER │ │RESEARCH │ │DEBUGGER │ │DESIGNER │          │
-│  │         │ │         │ │         │ │         │ │         │ │         │          │
-│  │ Writes  │ │ Tests   │ │ Reviews │ │ Looks   │ │ Fixes   │ │ Creates │          │
-│  │ code    │ │ + E2E   │ │ code    │ │ things  │ │ issues  │ │ design  │          │
-│  └─────────┘ └─────────┘ └─────────┘ └─────────┘ └─────────┘ └─────────┘          │
-│  ┌─────────────────────────┐ ┌─────────────────────────────┐                      │
-│  │ HEARTBEAT (Worker 7)    │ │ VERIFICATOR (Worker 8)      │  ← Reserved Workers  │
-│  │ Completion Guardian     │ │ Intelligent Verification    │                      │
-│  └─────────────────────────┘ └─────────────────────────────┘                      │
-└───────────────────────────────────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────────────────────────────────┐
+│                     WORKER POOL (11 Claude Code Instances)                              │
+│  ┌─────────┐ ┌─────────┐ ┌─────────┐ ┌─────────┐ ┌─────────┐ ┌─────────┐               │
+│  │ CODER   │ │ TESTER  │ │REVIEWER │ │RESEARCH │ │DEBUGGER │ │DESIGNER │               │
+│  │         │ │         │ │         │ │         │ │         │ │         │               │
+│  │ Writes  │ │ Tests   │ │ Reviews │ │ Looks   │ │ Fixes   │ │ Creates │               │
+│  │ code    │ │ + E2E   │ │ code    │ │ things  │ │ issues  │ │ design  │               │
+│  └─────────┘ └─────────┘ └─────────┘ └─────────┘ └─────────┘ └─────────┘               │
+│  ┌─────────────────────────┐ ┌─────────────────────────────┐ ← Reserved Workers        │
+│  │ HEARTBEAT (Worker 7)    │ │ VERIFICATOR (Worker 8)      │                           │
+│  │ Completion Guardian     │ │ Intelligent Verification    │                           │
+│  └─────────────────────────┘ └─────────────────────────────┘                           │
+│  ┌─────────────────────────┐ ┌─────────────────────────────┐ ┌─────────────────────┐   │
+│  │ BROWSER-HEADLESS (9)    │ │ BROWSER-CHROME (10)         │ │ SERVICES (11)       │   │
+│  │ Playwright automation   │ │ Chrome + VNC (visual)       │ │ Email/API services  │   │
+│  └─────────────────────────┘ └─────────────────────────────┘ └─────────────────────┘   │
+└────────────────────────────────────────────────────────────────────────────────────────┘
          │
          ▼
 ┌─────────────────────────────────────────────────────────┐
@@ -268,6 +272,105 @@ The Verificator is a **reserved worker** - it is never assigned regular tasks by
 
 ---
 
+## BROWSER WORKERS (Workers 9-10)
+
+CLOPUS now includes dedicated browser automation workers for web tasks.
+
+### Worker 9: Browser-Headless (Playwright)
+
+A headless Playwright-based worker for fast, automated browser tasks:
+- Web scraping and data extraction
+- Form filling and submission
+- Screenshot capture
+- Automated testing
+- No visual interface needed
+
+**Docker Configuration:**
+```yaml
+worker-9:
+  environment:
+    WORKER_ROLE: browser-headless
+    BROWSER_WORKER: "true"
+    PLAYWRIGHT_BROWSERS_PATH: /home/ubuntu/.cache/ms-playwright
+```
+
+### Worker 10: Browser-Chrome (VNC)
+
+Chrome browser with VNC access for visual browser control:
+- Claude in Chrome extension support
+- Visual debugging via VNC
+- Manual intervention when needed
+- Screenshot and recording capabilities
+
+**Access:**
+- noVNC: http://localhost:6280
+- VNC: localhost:5920
+
+**Docker Configuration:**
+```yaml
+worker-10:
+  build:
+    dockerfile: Dockerfile.browser-chrome
+  environment:
+    WORKER_ROLE: browser-chrome
+    BROWSER_MODE: vnc
+    DISPLAY: ":99"
+  ports:
+    - "6280:6080"  # noVNC
+    - "5920:5900"  # VNC
+```
+
+### Browser Worker Capabilities
+
+| Capability | Worker 9 | Worker 10 |
+|------------|----------|-----------|
+| Headless operation | Yes | No |
+| VNC access | No | Yes |
+| Playwright MCP | Yes | Yes |
+| Visual debugging | No | Yes |
+| Speed | Fast | Moderate |
+
+---
+
+## SERVICES WORKER (Worker 11)
+
+A dedicated worker for external service integrations.
+
+### What It Does
+
+- **Email Automation**: Send, read, organize emails via Gmail MCP
+- **Web Scraping**: Advanced data extraction via Firecrawl MCP
+- **API Integrations**: Connect to external services
+- **Calendar Management**: Google Calendar operations
+
+### Available MCPs
+
+| MCP | Capabilities |
+|-----|--------------|
+| `gmail` | Read, send, reply, organize emails |
+| `firecrawl` | Web scraping, structured data extraction |
+| `calendar` | Events, scheduling, availability |
+
+### Docker Configuration
+
+```yaml
+worker-11:
+  environment:
+    WORKER_ROLE: services
+    SERVICES_WORKER: "true"
+```
+
+### Use Cases
+
+| Use Case | How It Works |
+|----------|--------------|
+| Cold outreach | Gmail MCP sends personalized emails |
+| Competitor research | Firecrawl scrapes competitor sites |
+| Meeting scheduling | Calendar MCP manages availability |
+| Email answering | Gmail MCP reads and responds |
+
+---
+
 ## QUESTION/ANSWER SYSTEM
 
 ### How Questions Work
@@ -305,11 +408,14 @@ To answer, create a file in the answers directory with this ID as the filename.
 
 ---
 
-## MCP SERVERS (17 Core Capabilities)
+## MCP SERVERS (20 Core Capabilities)
 
 | MCP Server | What It Does |
 |------------|--------------|
 | `browser` | Full browser control, screenshots, automation |
+| `playwright` | Headless browser automation via Playwright MCP |
+| `gmail` | Gmail API - read, send, manage emails with OAuth |
+| `firecrawl` | Advanced web scraping and data extraction |
 | `memory` | Short-term (SQLite) + Long-term (ChromaDB) |
 | `validation` | 8-stage validation pipeline |
 | `github` | Repos, commits, PRs, issues |
@@ -725,6 +831,124 @@ Project state (`project_state.json`) is now automatically updated when:
 | Implementation tasks | `implementation: in_progress` |
 
 When all stages complete, project is marked as `status: completed`.
+
+---
+
+## RELIABILITY IMPROVEMENTS (v3.1)
+
+Major reliability fixes implemented to ensure projects complete successfully.
+
+### Circular Dependency Detection
+
+**File:** `orchestrator/task_planner.py`
+
+Tasks with circular dependencies are now detected and broken:
+```python
+# Before: Infinite loop possible
+# After: Detects cycles and raises ValueError
+def _get_dependency_depth(self, task, task_map, visited=None):
+    if task.id in visited:
+        raise ValueError(f"Circular dependency: {task.id}")
+    visited.add(task.id)
+    # ... continues safely
+```
+
+### Failed Dependency Handling
+
+**File:** `orchestrator/memory_client.py`
+
+Tasks with failed dependencies are now marked BLOCKED instead of waiting forever:
+```python
+# New TaskStatus: BLOCKED
+# When dependency fails → dependent task marked BLOCKED
+# Prevents infinite waiting for impossible completions
+```
+
+### ChromaDB Graceful Degradation
+
+**File:** `memory/long_term.py`
+
+If ChromaDB is unavailable, system continues with fallback:
+- 5 retry attempts with exponential backoff
+- Falls back to in-memory storage
+- Operations continue without crashing
+
+### IPC Acknowledgment Handshake
+
+**File:** `orchestrator/worker_pool.py`
+
+Tasks now require acknowledgment before marked as dispatched:
+```
+1. Orchestrator writes pending.json
+2. Worker reads pending.json, writes ack.json
+3. Orchestrator verifies ack.json within timeout
+4. Only then is task marked as dispatched
+```
+
+### Atomic Result Collection
+
+**File:** `orchestrator/worker_pool.py`
+
+Results are collected atomically to prevent race conditions:
+```
+1. Worker writes result.json
+2. Orchestrator renames to result.collected (atomic)
+3. Orchestrator reads result.collected
+4. Orchestrator deletes result.collected
+```
+
+### Configurable Validation Timeouts
+
+**File:** `validation/pipeline.py`
+
+Per-stage configurable timeouts with graceful handling:
+```python
+DEFAULT_STAGE_TIMEOUTS = {
+    "syntax": 60,      # 1 minute
+    "lint": 120,       # 2 minutes
+    "build": 300,      # 5 minutes
+    "unit_tests": 300, # 5 minutes
+    "integration_tests": 600,  # 10 minutes
+    "e2e_tests": 600,  # 10 minutes
+    "security": 180,   # 3 minutes
+    "review": 300      # 5 minutes
+}
+# Timeout → TIMEOUT status (not failure)
+# Non-strict mode continues after timeout
+```
+
+### Post-Retry Escalation
+
+**File:** `orchestrator/memory_client.py`
+
+When max retries exhausted, task escalates to user:
+```
+1. Task fails
+2. Retry 1, 2, 3...
+3. Max retries reached → Create user question
+4. User decides: retry, skip, or manual fix
+```
+
+### Task Deduplication with Reporting
+
+**File:** `orchestrator/memory_client.py`
+
+Duplicate tasks are detected and reported:
+```python
+# Returns (created_tasks, skipped_tasks) if return_skipped=True
+created, skipped = await memory.create_tasks(objective_id, tasks, return_skipped=True)
+# Logs: "Created 5 tasks, skipped 3 duplicates"
+```
+
+### Verificator Timeout with Retry Info
+
+**File:** `orchestrator/worker_pool.py`, `orchestrator/verificator_client.py`
+
+Verificator timeouts now return error info for retry handling:
+```python
+# Before: return None
+# After: return {"error": "timeout", "retryable": True, "message": "..."}
+```
 
 ---
 

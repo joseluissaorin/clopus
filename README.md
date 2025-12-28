@@ -22,7 +22,7 @@
 
 **CLOPUS** (Claude-based Locally Orchestrated Production Unified System) is a fully autonomous development system that orchestrates multiple Claude Code instances to build complete software projects with minimal human intervention.
 
-Give it an objective like *"Build a todo app with React and FastAPI"* and watch as 8 specialized AI workers collaborate to design, implement, test, and validate production-ready code.
+Give it an objective like *"Build a todo app with React and FastAPI"* and watch as 11 specialized AI workers collaborate to design, implement, test, and validate production-ready code.
 
 ## Table of Contents
 
@@ -59,7 +59,7 @@ Traditional AI coding assistants require constant human guidance. CLOPUS takes a
 | Traditional AI Coding | CLOPUS |
 |----------------------|--------|
 | Single conversation context | Persistent memory across sessions |
-| One task at a time | 8 parallel specialized workers |
+| One task at a time | 11 parallel specialized workers |
 | Manual testing | 8-stage automated validation |
 | No learning | Learns from every project |
 | Basic code generation | Full project scaffolding + deployment |
@@ -79,11 +79,14 @@ Traditional AI coding assistants require constant human guidance. CLOPUS takes a
 ## Features
 
 ### Multi-Agent Architecture
-- **8 Parallel Workers**: Specialized roles (Coder, Tester, Reviewer, Researcher, Debugger, Designer) + 2 reserved workers (Heartbeat, Verificator)
+- **11 Parallel Workers**: 6 core roles (Coder, Tester, Reviewer, Researcher, Debugger, Designer) + 5 reserved workers
+- **Reserved Workers**: Heartbeat, Verificator, Browser-Headless, Browser-Chrome, Services
 - **Intelligent Task Distribution**: Orchestrator assigns tasks based on worker specialization and workload
-- **File-Based IPC**: Simple, debuggable communication via JSON files
+- **File-Based IPC**: Simple, debuggable communication via JSON files with acknowledgment handshake
 - **Designer Agent**: Creates comprehensive branding and design systems before implementation
 - **Verificator Worker**: Uses Claude's intelligence to verify task completions and detect semantic duplicates
+- **Browser Workers**: Playwright (headless) and Chrome+VNC (visual) for web automation
+- **Services Worker**: Email, calendar, and external API integrations via MCP
 
 ### Project Continuity
 - **Automatic Resumption**: Incomplete projects are automatically resumed on restart
@@ -117,8 +120,9 @@ Every piece of generated code passes through:
 8. **Code Review** - Automated review by Reviewer worker
 
 ### Browser Automation
-- **MCP Server**: Playwright-based automation for reliable web interactions
-- **VNC Container**: Chromium with noVNC for visual debugging
+- **Worker 9 (Browser-Headless)**: Playwright-based automation for fast, headless web tasks
+- **Worker 10 (Browser-Chrome)**: Chrome with VNC for visual debugging and Claude extension support
+- **MCP Servers**: Playwright MCP, Gmail MCP, Firecrawl MCP for comprehensive web/email automation
 
 ### Universal Dev Tools
 Pre-installed: Python, Node.js, Go, Rust, PHP, Ruby, cloud CLIs (AWS, GCP, Azure, Vercel, Railway, Fly.io), Docker, kubectl, terraform, and more.
@@ -341,9 +345,17 @@ Done! Project available at: /workspace/projects/blog-nextjs
                                 │
         ┌───────────────────────┼───────────────────────┐
         ▼                       ▼                       ▼
+┌────────────────────────────┐   ┌────────────────────────────┐   ┌────────────────────────────┐
+│       Worker 9             │   │       Worker 10            │   │       Worker 11            │
+│  (Browser-Headless)        │   │   (Browser-Chrome)         │   │      (Services)            │
+│   Playwright automation    │   │   Chrome + VNC (visual)    │   │   Email/API integrations   │
+└────────────────────────────┘   └────────────────────────────┘   └────────────────────────────┘
+                                │
+        ┌───────────────────────┼───────────────────────┐
+        ▼                       ▼                       ▼
 ┌───────────────┐       ┌───────────────┐       ┌───────────────┐
 │    SQLite     │       │   ChromaDB    │       │  MCP Servers  │
-│ (Short-term)  │       │ (Long-term)   │       │  (10+ tools)  │
+│ (Short-term)  │       │ (Long-term)   │       │  (20+ tools)  │
 └───────────────┘       └───────────────┘       └───────────────┘
 ```
 
@@ -352,7 +364,7 @@ Done! Project available at: /workspace/projects/blog-nextjs
 **Tier 1 (Always Running)**:
 - Orchestrator
 - 6 Claude Code Workers (Coder, Tester, Reviewer, Researcher, Debugger, Designer)
-- 2 Reserved Workers (Heartbeat, Verificator) - not assigned regular tasks
+- 5 Reserved Workers (Heartbeat, Verificator, Browser-Headless, Browser-Chrome, Services)
 - SQLite
 - ChromaDB
 
@@ -362,7 +374,6 @@ Done! Project available at: /workspace/projects/blog-nextjs
 - MinIO (S3)
 - Prometheus
 - Grafana
-- Browser (VNC)
 
 The Service Manager automatically provisions Tier 2 services when a project needs them.
 
@@ -380,6 +391,9 @@ Each worker runs a full Claude Code instance with role-specific system prompts a
 | Worker 6 | **Designer** | Branding, design systems, visual consistency | design-system, ui-ux |
 | Worker 7 | **Heartbeat** *(reserved)* | Gap analysis, completion verification | objective-analysis, integration-testing |
 | Worker 8 | **Verificator** *(reserved)* | Intelligent verification, deduplication | artifact-verification, semantic-analysis |
+| Worker 9 | **Browser-Headless** *(reserved)* | Playwright automation, web scraping | playwright-mcp, web-scraping |
+| Worker 10 | **Browser-Chrome** *(reserved)* | Chrome + VNC, visual debugging | chrome-automation, vnc-access |
+| Worker 11 | **Services** *(reserved)* | Email, calendar, API integrations | gmail-mcp, firecrawl-mcp, calendar-mcp |
 
 Workers communicate via file-based IPC:
 - `ipc/tasks/{worker_id}/pending.json` - Tasks for worker
@@ -769,6 +783,9 @@ After completing a project:
 | Server | Description | Key Tools |
 |--------|-------------|-----------|
 | **browser** | Playwright automation | navigate, screenshot, click, fill, evaluate |
+| **playwright** | Headless browser via Playwright MCP | navigate, click, fill, screenshot, evaluate |
+| **gmail** | Gmail API with OAuth | read_email, send_email, list_messages, search |
+| **firecrawl** | Advanced web scraping | scrape_page, extract_data, crawl_site |
 | **memory** | Memory system access | store, retrieve, search, forget |
 | **validation** | Run validation pipeline | validate, get_results, get_coverage |
 | **email-resend** | Email via Resend API | send_email, send_template |
@@ -907,8 +924,9 @@ ONESIGNAL_APP_ID=...
 
 ```yaml
 workers:
-  count: 6
-  roles: [coder, tester, reviewer, researcher, debugger, designer]
+  count: 11
+  roles: [coder, tester, reviewer, researcher, debugger, designer, heartbeat, verificator, browser-headless, browser-chrome, services]
+  reserved_roles: [heartbeat, verificator, browser-headless, browser-chrome, services]
   heartbeat_interval: 30
   task_timeout: 3600
 
@@ -1067,10 +1085,14 @@ docker-compose build
 
 ## Roadmap
 
-### v3.1 (Next)
+### v3.1 (Current)
 - [ ] Web UI dashboard
 - [x] Multi-project management *(implemented)*
 - [x] Verificator Worker *(implemented)* - Intelligent artifact verification and semantic deduplication
+- [x] 11 Workers Architecture *(implemented)* - Expanded from 8 to 11 workers
+- [x] Browser Workers *(implemented)* - Playwright headless + Chrome with VNC
+- [x] Services Worker *(implemented)* - Gmail, Firecrawl, Calendar integrations
+- [x] Reliability Improvements *(implemented)* - Circular deps, graceful degradation, atomic IPC
 - [ ] Cost tracking and budgets
 - [ ] Custom worker roles
 

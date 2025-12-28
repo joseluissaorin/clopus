@@ -56,7 +56,12 @@ class VerificatorClient:
             }
         )
 
-        if result and "artifacts" in result:
+        # Check for error responses (timeout, worker_busy, etc.)
+        if result and "error" in result:
+            logger.warning(f"Verificator error: {result.get('message', result['error'])}")
+            if result.get("retryable"):
+                logger.debug(f"Error is retryable, using fallback for now")
+        elif result and "artifacts" in result:
             artifacts = result["artifacts"]
             logger.info(f"Verificator specified {len(artifacts)} artifacts for task: {task_title}")
             return artifacts
@@ -103,7 +108,10 @@ class VerificatorClient:
             }
         )
 
-        if result:
+        # Check for error responses (timeout, worker_busy, etc.)
+        if result and "error" in result:
+            logger.warning(f"Verificator error: {result.get('message', result['error'])}")
+        elif result and "verified" in result:
             verified = result.get("verified", False)
             missing = result.get("missing", [])
             found = result.get("found", [])
@@ -148,7 +156,10 @@ class VerificatorClient:
             }
         )
 
-        if result:
+        # Check for error responses (timeout, worker_busy, etc.)
+        if result and "error" in result:
+            logger.warning(f"Verificator error: {result.get('message', result['error'])}")
+        elif result and "is_duplicate" in result:
             is_duplicate = result.get("is_duplicate", False)
             confidence = result.get("confidence", 0.0)
             return is_duplicate, confidence
@@ -189,7 +200,10 @@ class VerificatorClient:
             }
         )
 
-        if result:
+        # Check for error responses (timeout, worker_busy, etc.)
+        if result and "error" in result:
+            logger.warning(f"Verificator error: {result.get('message', result['error'])}")
+        elif result and "project_path" in result:
             project_path = result.get("project_path")
             confidence = result.get("confidence", 0.0)
             if project_path and confidence > 0.5:
@@ -236,7 +250,10 @@ class VerificatorClient:
             }
         )
 
-        if result:
+        # Check for error responses (timeout, worker_busy, etc.)
+        if result and "error" in result:
+            logger.warning(f"Verificator error: {result.get('message', result['error'])}")
+        elif result and "passed" in result:
             passed = result.get("passed", False)
             missing = result.get("missing_artifacts", [])
             recommendation = result.get("recommendation", "manual-review")
@@ -281,7 +298,10 @@ class VerificatorClient:
             }
         )
 
-        if result:
+        # Check for error responses (timeout, worker_busy, etc.)
+        if result and "error" in result:
+            logger.warning(f"Verificator error: {result.get('message', result['error'])}")
+        elif result and "matches" in result:
             matches = result.get("matches", True)
             coverage = result.get("coverage", 1.0)
             gaps = result.get("gaps", [])

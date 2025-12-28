@@ -33,6 +33,20 @@ class ValidationStatus(str, Enum):
     PASSED = "passed"
     FAILED = "failed"
     SKIPPED = "skipped"
+    TIMEOUT = "timeout"
+
+
+# Default per-stage timeouts (in seconds)
+DEFAULT_STAGE_TIMEOUTS = {
+    "syntax": 60,
+    "lint": 120,
+    "build": 300,
+    "unit_tests": 300,
+    "integration_tests": 600,
+    "e2e_tests": 600,
+    "security": 180,
+    "review": 300
+}
 
 
 @dataclass
@@ -59,13 +73,14 @@ class ValidationResult:
 
 
 class ValidationPipeline:
-    """8-stage validation pipeline."""
+    """8-stage validation pipeline with configurable per-stage timeouts."""
 
     def __init__(
         self,
         memory_client,
         config,
-        worker_pool=None
+        worker_pool=None,
+        stage_timeouts: Optional[Dict[str, int]] = None
     ):
         self.memory = memory_client
         self.config = config
@@ -73,7 +88,12 @@ class ValidationPipeline:
         self.enabled_stages = config.enabled_stages
         self.strict_mode = config.strict_mode
         self.allow_warnings = config.allow_warnings
-        self.timeout_per_stage = config.timeout_per_stage_s
+        self.default_timeout = config.timeout_per_stage_s
+
+        # Per-stage configurable timeouts
+        self.stage_timeouts = {**DEFAULT_STAGE_TIMEOUTS}
+        if stage_timeouts:
+            self.stage_timeouts.update(stage_timeouts)
 
         # Import stage handlers
         from .stages import (
@@ -146,14 +166,17 @@ class ValidationPipeline:
                 ))
                 continue
 
+            # Get per-stage timeout
+            stage_timeout = self.stage_timeouts.get(stage.value, self.default_timeout)
+
             # Run stage with timeout
             try:
-                logger.info(f"Running stage: {stage.value}")
+                logger.info(f"Running stage: {stage.value} (timeout: {stage_timeout}s)")
                 stage_start = datetime.now()
 
                 result = await asyncio.wait_for(
                     handler.validate(path, project_type),
-                    timeout=self.timeout_per_stage
+                    timeout=stage_timeout
                 )
 
                 result.duration_ms = int(
@@ -191,15 +214,23 @@ class ValidationPipeline:
                     )
 
             except asyncio.TimeoutError:
+                logger.warning(f"Stage {stage.value} timed out after {stage_timeout}s")
                 results.append(StageResult(
                     stage=stage,
-                    status=ValidationStatus.FAILED,
-                    errors=[f"Stage timed out after {self.timeout_per_stage}s"]
+                    status=ValidationStatus.TIMEOUT,
+                    errors=[f"Stage timed out after {stage_timeout} seconds"],
+                    output=f"Timeout after {stage_timeout}s. Consider increasing timeout or optimizing stage."
                 ))
-                all_passed = False
 
+                # In non-strict mode, continue with remaining stages
                 if self.strict_mode:
+                    all_passed = False
                     break
+                else:
+                    # Log timeout but continue
+                    logger.info(f"Continuing pipeline after {stage.value} timeout (non-strict mode)")
+                    all_passed = False
+                    continue
 
             except Exception as e:
                 logger.error(f"Error in stage {stage.value}: {e}")
@@ -278,6 +309,10 @@ class ValidationPipeline:
                 lines.append(f"  ✓ {stage_name}: passed ({result.duration_ms}ms)")
             elif status_str == "failed":
                 lines.append(f"  ✗ {stage_name}: FAILED")
+                for error in result.errors[:3]:
+                    lines.append(f"      - {error[:80]}")
+            elif status_str == "timeout":
+                lines.append(f"  ⏱ {stage_name}: TIMEOUT")
                 for error in result.errors[:3]:
                     lines.append(f"      - {error[:80]}")
             elif status_str == "skipped":

@@ -49,7 +49,7 @@ class Memory:
 
 
 class LongTermMemory:
-    """ChromaDB-based long-term memory manager."""
+    """ChromaDB-based long-term memory manager with graceful degradation."""
 
     def __init__(
         self,
@@ -64,16 +64,60 @@ class LongTermMemory:
         self.embedding_engine = embedding_engine or EmbeddingEngine()
         self._lock = asyncio.Lock()
 
+        # Fallback mode when ChromaDB is unavailable
+        self._fallback_mode = False
+        self._fallback_storage: Dict[str, List[Dict]] = {}
+
+        # Logging
+        import logging
+        self._logger = logging.getLogger("clopus.long_term_memory")
+
     async def initialize(self) -> None:
-        """Initialize ChromaDB connection and collections."""
-        self._client = chromadb.HttpClient(
-            host=self.host,
-            port=self.port,
-            settings=Settings(
-                anonymized_telemetry=False,
-                allow_reset=True
-            )
-        )
+        """Initialize ChromaDB connection with retry and fallback."""
+        max_retries = 5
+        retry_delay = 2
+
+        for attempt in range(max_retries):
+            try:
+                self._client = chromadb.HttpClient(
+                    host=self.host,
+                    port=self.port,
+                    settings=Settings(
+                        anonymized_telemetry=False,
+                        allow_reset=True
+                    )
+                )
+
+                # Test connection with heartbeat
+                self._client.heartbeat()
+                self._logger.info(f"ChromaDB connected successfully on attempt {attempt + 1}")
+                break
+
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    self._logger.warning(
+                        f"ChromaDB connection attempt {attempt + 1} failed: {e}. "
+                        f"Retrying in {retry_delay * (2 ** attempt)}s..."
+                    )
+                    await asyncio.sleep(retry_delay * (2 ** attempt))
+                else:
+                    self._logger.error(
+                        f"ChromaDB unavailable after {max_retries} attempts. "
+                        "Entering fallback mode with in-memory storage."
+                    )
+                    self._fallback_mode = True
+                    self._fallback_storage = {
+                        "learnings": [],
+                        "patterns": [],
+                        "solutions": [],
+                        "error_fixes": [],
+                        "decisions": [],
+                        "skills": [],
+                        "templates": [],
+                        "apis": [],
+                        "codebases": []
+                    }
+                    return
 
         # Create collections for different memory types
         collection_configs = {
@@ -89,10 +133,18 @@ class LongTermMemory:
         }
 
         for name, description in collection_configs.items():
-            self._collections[name] = self._client.get_or_create_collection(
-                name=f"clopus_{name}",
-                metadata={"description": description}
-            )
+            try:
+                self._collections[name] = self._client.get_or_create_collection(
+                    name=f"clopus_{name}",
+                    metadata={"description": description}
+                )
+            except Exception as e:
+                self._logger.error(f"Failed to create collection {name}: {e}")
+                self._collections[name] = None
+
+    def is_available(self) -> bool:
+        """Check if ChromaDB is available (not in fallback mode)."""
+        return not self._fallback_mode
 
     def _get_collection(self, memory_type: MemoryType) -> chromadb.Collection:
         """Get collection for memory type."""
@@ -133,20 +185,65 @@ class LongTermMemory:
             elif value is None:
                 metadata[key] = ""
 
+        # Fallback mode - store in memory
+        if self._fallback_mode:
+            collection_name = self._get_collection_name(memory_type)
+            self._fallback_storage[collection_name].append({
+                "id": memory_id,
+                "content": content,
+                "metadata": metadata
+            })
+            self._logger.debug(f"Stored memory {memory_id} in fallback storage")
+            return memory_id
+
         # Generate embedding
         embedding = await self.embedding_engine.embed(content)
 
         # Store in ChromaDB
         collection = self._get_collection(memory_type)
-        async with self._lock:
-            collection.add(
-                ids=[memory_id],
-                embeddings=[embedding],
-                documents=[content],
-                metadatas=[metadata]
-            )
+        if collection is None:
+            self._logger.warning(f"Collection for {memory_type} is None, using fallback")
+            collection_name = self._get_collection_name(memory_type)
+            self._fallback_storage.setdefault(collection_name, []).append({
+                "id": memory_id,
+                "content": content,
+                "metadata": metadata
+            })
+            return memory_id
+
+        try:
+            async with self._lock:
+                collection.add(
+                    ids=[memory_id],
+                    embeddings=[embedding],
+                    documents=[content],
+                    metadatas=[metadata]
+                )
+        except Exception as e:
+            self._logger.error(f"Failed to store in ChromaDB: {e}, using fallback")
+            collection_name = self._get_collection_name(memory_type)
+            self._fallback_storage.setdefault(collection_name, []).append({
+                "id": memory_id,
+                "content": content,
+                "metadata": metadata
+            })
 
         return memory_id
+
+    def _get_collection_name(self, memory_type: MemoryType) -> str:
+        """Get collection name for memory type."""
+        mapping = {
+            MemoryType.LEARNING: "learnings",
+            MemoryType.PATTERN: "patterns",
+            MemoryType.SOLUTION: "solutions",
+            MemoryType.ERROR_FIX: "error_fixes",
+            MemoryType.DECISION: "decisions",
+            MemoryType.SKILL: "skills",
+            MemoryType.TEMPLATE: "templates",
+            MemoryType.API: "apis",
+            MemoryType.CODEBASE: "codebases"
+        }
+        return mapping[memory_type]
 
     async def store_learning(
         self,
@@ -284,41 +381,93 @@ class LongTermMemory:
         min_relevance: float = 0.0
     ) -> List[Memory]:
         """Search memories by semantic similarity."""
+        # Fallback mode - simple text matching
+        if self._fallback_mode:
+            return self._fallback_search(query, memory_type, n_results)
+
         # Generate query embedding
         query_embedding = await self.embedding_engine.embed(query)
 
         if memory_type:
             # Search specific collection
-            collections = [self._get_collection(memory_type)]
+            collection = self._get_collection(memory_type)
+            collections = [collection] if collection else []
         else:
-            # Search all collections
-            collections = list(self._collections.values())
+            # Search all collections (skip None collections)
+            collections = [c for c in self._collections.values() if c is not None]
+
+        if not collections:
+            self._logger.warning("No collections available, using fallback search")
+            return self._fallback_search(query, memory_type, n_results)
 
         all_results = []
 
         for collection in collections:
-            results = collection.query(
-                query_embeddings=[query_embedding],
-                n_results=n_results,
-                where=where
-            )
+            try:
+                results = collection.query(
+                    query_embeddings=[query_embedding],
+                    n_results=n_results,
+                    where=where
+                )
 
-            if results and results["ids"] and results["ids"][0]:
-                for i, doc_id in enumerate(results["ids"][0]):
-                    distance = results["distances"][0][i] if results["distances"] else 0
-                    relevance = 1 - distance  # Convert distance to relevance
+                if results and results["ids"] and results["ids"][0]:
+                    for i, doc_id in enumerate(results["ids"][0]):
+                        distance = results["distances"][0][i] if results["distances"] else 0
+                        relevance = 1 - distance  # Convert distance to relevance
 
-                    if relevance >= min_relevance:
-                        memory = Memory(
-                            id=doc_id,
-                            memory_type=MemoryType(results["metadatas"][0][i].get("memory_type", "learning")),
-                            content=results["documents"][0][i],
-                            metadata=results["metadatas"][0][i],
-                            relevance_score=relevance
-                        )
-                        all_results.append(memory)
+                        if relevance >= min_relevance:
+                            memory = Memory(
+                                id=doc_id,
+                                memory_type=MemoryType(results["metadatas"][0][i].get("memory_type", "learning")),
+                                content=results["documents"][0][i],
+                                metadata=results["metadatas"][0][i],
+                                relevance_score=relevance
+                            )
+                            all_results.append(memory)
+            except Exception as e:
+                self._logger.error(f"Error searching collection: {e}")
+                continue
 
         # Sort by relevance and limit
+        all_results.sort(key=lambda x: x.relevance_score or 0, reverse=True)
+        return all_results[:n_results]
+
+    def _fallback_search(
+        self,
+        query: str,
+        memory_type: Optional[MemoryType] = None,
+        n_results: int = 10
+    ) -> List[Memory]:
+        """Simple text-based search for fallback mode."""
+        query_lower = query.lower()
+        all_results = []
+
+        if memory_type:
+            collection_names = [self._get_collection_name(memory_type)]
+        else:
+            collection_names = list(self._fallback_storage.keys())
+
+        for collection_name in collection_names:
+            items = self._fallback_storage.get(collection_name, [])
+            for item in items:
+                content = item.get("content", "")
+                # Simple word overlap scoring
+                content_lower = content.lower()
+                query_words = set(query_lower.split())
+                content_words = set(content_lower.split())
+                overlap = len(query_words & content_words)
+                if overlap > 0:
+                    relevance = overlap / max(len(query_words), 1)
+                    memory = Memory(
+                        id=item.get("id", ""),
+                        memory_type=MemoryType(item.get("metadata", {}).get("memory_type", "learning")),
+                        content=content,
+                        metadata=item.get("metadata", {}),
+                        relevance_score=relevance
+                    )
+                    all_results.append(memory)
+
+        # Sort by relevance
         all_results.sort(key=lambda x: x.relevance_score or 0, reverse=True)
         return all_results[:n_results]
 

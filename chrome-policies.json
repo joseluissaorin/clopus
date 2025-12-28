@@ -1,0 +1,23 @@
+{
+  "ExtensionSettings": {
+    "*": {
+      "allowed_types": ["extension", "hosted_app", "platform_app", "theme"]
+    }
+  },
+  "AutofillAddressEnabled": false,
+  "AutofillCreditCardEnabled": false,
+  "BookmarkBarEnabled": false,
+  "BrowserSignin": 0,
+  "DefaultBrowserSettingEnabled": false,
+  "DefaultNotificationsSetting": 2,
+  "DefaultPopupsSetting": 1,
+  "PasswordManagerEnabled": false,
+  "SafeBrowsingEnabled": true,
+  "TranslateEnabled": false,
+  "MetricsReportingEnabled": false,
+  "SpellcheckEnabled": false,
+  "SearchSuggestEnabled": false,
+  "RestoreOnStartup": 1,
+  "HomepageLocation": "about:blank",
+  "CommandLineFlagSecurityWarningsEnabled": false
+}

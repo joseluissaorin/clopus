@@ -12,8 +12,19 @@ LABEL description="CLOPUS Claude Code Worker"
 # =============================================================================
 # Setup for non-root user (ubuntu UID 1000)
 # =============================================================================
-RUN mkdir -p /workspace /app/ipc /home/ubuntu/.claude && \
+RUN mkdir -p /workspace /app/ipc /home/ubuntu/.claude \
+             /home/ubuntu/.config/gmail /home/ubuntu/.cache/ms-playwright && \
     chown -R ubuntu:ubuntu /workspace /app /home/ubuntu
+
+# =============================================================================
+# Install Playwright MCP and other npm-based MCPs
+# =============================================================================
+# Install global npm packages for MCPs
+RUN npm install -g @anthropic-ai/claude-code && \
+    npm install -g @playwright/mcp@latest || true
+
+# Install Playwright browsers for browser workers
+RUN npx playwright install chromium 2>/dev/null || true
 
 # =============================================================================
 # Worker Configuration
@@ -48,6 +59,7 @@ ENV WORKER_ID=1
 ENV WORKER_ROLE=coder
 ENV IPC_PATH=/app/ipc
 ENV HOME=/home/ubuntu
+ENV PLAYWRIGHT_BROWSERS_PATH=/home/ubuntu/.cache/ms-playwright
 
 # Switch to non-root user for Claude Code
 USER ubuntu

@@ -1,0 +1,112 @@
+# =============================================================================
+# CLOPUS v3 Chrome Browser Worker
+# =============================================================================
+# Chrome with VNC + Claude Code + Claude in Chrome extension
+# For visual browser automation and OAuth flows
+
+FROM ubuntu:24.04
+
+LABEL maintainer="CLOPUS Team"
+LABEL version="3.0.0"
+LABEL description="CLOPUS Chrome Browser Worker with Claude Extension"
+
+# Prevent interactive prompts
+ENV DEBIAN_FRONTEND=noninteractive
+
+# =============================================================================
+# Install System Dependencies
+# =============================================================================
+RUN apt-get update && apt-get install -y \
+    # VNC and display
+    xvfb x11vnc fluxbox novnc websockify \
+    # Fonts for proper rendering
+    fonts-liberation fonts-noto fonts-noto-cjk fonts-dejavu \
+    # Utilities
+    wget gnupg curl git jq unzip \
+    # For Chrome
+    libnss3 libatk-bridge2.0-0 libgtk-3-0 libgbm1 libasound2t64 \
+    libxss1 libxtst6 libxrandr2 libxcomposite1 libxdamage1 \
+    # Node.js
+    nodejs npm \
+    # Python for scripts
+    python3 python3-pip \
+    && rm -rf /var/lib/apt/lists/*
+
+# =============================================================================
+# Install Google Chrome (stable)
+# =============================================================================
+RUN wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | apt-key add - && \
+    echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list && \
+    apt-get update && \
+    apt-get install -y google-chrome-stable && \
+    rm -rf /var/lib/apt/lists/*
+
+# =============================================================================
+# Install Node.js 20 (LTS)
+# =============================================================================
+RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
+    apt-get install -y nodejs && \
+    rm -rf /var/lib/apt/lists/*
+
+# =============================================================================
+# Install Claude Code
+# =============================================================================
+RUN npm install -g @anthropic-ai/claude-code
+
+# =============================================================================
+# Create non-root user
+# =============================================================================
+RUN useradd -m -s /bin/bash -u 1000 ubuntu && \
+    mkdir -p /workspace /app/ipc /home/ubuntu/.claude \
+             /home/ubuntu/.config/google-chrome \
+             /home/ubuntu/.cache/ms-playwright && \
+    chown -R ubuntu:ubuntu /workspace /app /home/ubuntu
+
+# =============================================================================
+# Chrome Extension Policy (auto-install extensions)
+# =============================================================================
+# Note: Claude in Chrome extension ID needs to be added once available
+RUN mkdir -p /etc/opt/chrome/policies/managed
+COPY chrome-policies.json /etc/opt/chrome/policies/managed/
+
+# =============================================================================
+# Worker Configuration
+# =============================================================================
+WORKDIR /workspace
+
+# Copy worker configuration
+COPY --chown=ubuntu:ubuntu workers/system-prompts/ /app/system-prompts/
+COPY --chown=ubuntu:ubuntu workers/hooks/ /app/hooks/
+COPY --chown=ubuntu:ubuntu skills/ /app/skills/
+
+# Copy MCP configuration
+COPY --chown=ubuntu:ubuntu workers/.mcp.json /workspace/.mcp.json
+
+# Make hooks executable
+RUN chmod +x /app/hooks/*.sh 2>/dev/null || true
+
+# =============================================================================
+# Entry Point Script
+# =============================================================================
+COPY --chown=ubuntu:ubuntu workers/browser-chrome-entrypoint.sh /app/browser-chrome-entrypoint.sh
+RUN chmod +x /app/browser-chrome-entrypoint.sh
+
+# =============================================================================
+# Environment
+# =============================================================================
+ENV WORKER_ID=10
+ENV WORKER_ROLE=browser-chrome
+ENV IPC_PATH=/app/ipc
+ENV HOME=/home/ubuntu
+ENV DISPLAY=:99
+ENV VNC_PORT=5900
+ENV NOVNC_PORT=6080
+ENV BROWSER_MODE=vnc
+
+# VNC and noVNC ports
+EXPOSE 5900 6080
+
+# Switch to non-root user
+USER ubuntu
+
+CMD ["/app/browser-chrome-entrypoint.sh"]

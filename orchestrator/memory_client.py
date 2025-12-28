@@ -7,7 +7,7 @@ Combines short-term (SQLite) and long-term (ChromaDB) memory access.
 """
 
 import asyncio
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple, Union
 from dataclasses import dataclass
 
 from memory import ShortTermMemory, LongTermMemory, EmbeddingEngine
@@ -132,14 +132,25 @@ class MemoryClient:
     async def create_tasks(
         self,
         objective_id: str,
-        tasks: List[Dict]
-    ) -> List[Task]:
+        tasks: List[Dict],
+        return_skipped: bool = False
+    ) -> Union[List[Task], Tuple[List[Task], List[Dict]]]:
         """Create multiple tasks for an objective with deduplication.
 
         Tasks with the same title that already exist (and are not completed/failed)
         will be skipped to prevent duplicate task creation on orchestrator restart.
+
+        Args:
+            objective_id: The objective to create tasks for
+            tasks: List of task definitions
+            return_skipped: If True, returns tuple of (created, skipped)
+
+        Returns:
+            If return_skipped=False: List of created tasks
+            If return_skipped=True: Tuple of (created_tasks, skipped_tasks)
         """
         created_tasks = []
+        skipped_tasks = []
 
         # Get existing tasks for this objective to prevent duplicates
         existing_tasks = await self.short_term.get_tasks_for_objective(objective_id)
@@ -153,6 +164,11 @@ class MemoryClient:
 
             # Skip if task with this title already exists (and is not completed/failed)
             if title in existing_titles:
+                skipped_tasks.append({
+                    "title": title,
+                    "reason": "duplicate",
+                    "worker_role": task_def.get("worker_role")
+                })
                 await self.short_term.log_activity(
                     source="orchestrator",
                     action="task_skipped_duplicate",
@@ -181,10 +197,30 @@ class MemoryClient:
                 task_id=task.id
             )
 
+        # Log summary if any tasks were skipped
+        if skipped_tasks:
+            await self.short_term.log_activity(
+                source="orchestrator",
+                action="tasks_deduplication_summary",
+                details={
+                    "created": len(created_tasks),
+                    "skipped": len(skipped_tasks),
+                    "skipped_titles": [t["title"] for t in skipped_tasks]
+                },
+                objective_id=objective_id,
+                level="info"
+            )
+
+        if return_skipped:
+            return created_tasks, skipped_tasks
         return created_tasks
 
     async def get_assignable_tasks(self, worker_role: Optional[str] = None) -> List[Task]:
-        """Get tasks that can be assigned to workers."""
+        """Get tasks that can be assigned to workers.
+
+        Tasks with failed dependencies are automatically marked as BLOCKED
+        to prevent them from blocking the queue forever.
+        """
         pending = await self.short_term.get_pending_tasks(worker_role)
 
         # Filter out tasks with unmet dependencies
@@ -193,14 +229,48 @@ class MemoryClient:
             if not task.dependencies:
                 assignable.append(task)
             else:
-                # Check if all dependencies are completed
+                # Check dependency status
                 all_completed = True
+                has_failed = False
+                failed_dep_id = None
+
                 for dep_id in task.dependencies:
                     dep_task = await self.short_term.get_task(dep_id)
-                    if not dep_task or dep_task.status != TaskStatus.COMPLETED:
+                    if not dep_task:
+                        # Missing dependency - skip it
+                        continue
+
+                    if dep_task.status == TaskStatus.FAILED:
+                        has_failed = True
+                        failed_dep_id = dep_id
+                        break
+                    elif dep_task.status == TaskStatus.BLOCKED:
+                        # Dependency is blocked, so this task is also blocked
+                        has_failed = True
+                        failed_dep_id = dep_id
+                        break
+                    elif dep_task.status != TaskStatus.COMPLETED:
                         all_completed = False
                         break
-                if all_completed:
+
+                if has_failed:
+                    # Propagate failure to dependent task by marking it as BLOCKED
+                    await self.short_term.update_task_status(
+                        task.id,
+                        TaskStatus.BLOCKED,
+                        error=f"Dependency {failed_dep_id} failed or blocked"
+                    )
+                    await self.short_term.log_activity(
+                        source="orchestrator",
+                        action="task_blocked",
+                        details={
+                            "task_id": task.id,
+                            "failed_dependency": failed_dep_id,
+                            "reason": "dependency_failed"
+                        },
+                        task_id=task.id
+                    )
+                elif all_completed:
                     assignable.append(task)
 
         return assignable
@@ -235,32 +305,80 @@ class MemoryClient:
         result: Optional[Dict] = None,
         error: Optional[str] = None
     ) -> None:
-        """Complete a task."""
-        status = TaskStatus.COMPLETED if success else TaskStatus.FAILED
+        """Complete a task with retry escalation.
 
-        await self.short_term.update_task_status(task_id, status, result, error)
+        If task fails and has retries remaining, it's re-queued.
+        If max retries exhausted, task is escalated to user.
+        """
         await self.short_term.update_worker_status(worker_id, WorkerStatus.IDLE)
         await self.short_term.increment_worker_stats(worker_id, success)
 
-        # If failed and can retry
-        if not success:
+        if success:
+            # Task succeeded
+            await self.short_term.update_task_status(task_id, TaskStatus.COMPLETED, result, None)
+            await self.short_term.log_activity(
+                source="orchestrator",
+                action="task_completed",
+                details={"result": str(result)[:200] if result else None},
+                task_id=task_id,
+                worker_id=worker_id
+            )
+        else:
+            # Task failed - check retry count
             task = await self.short_term.get_task(task_id)
-            if task and task.retry_count < task.max_retries:
-                await self.short_term.increment_task_retry(task_id)
+            if task:
+                if task.retry_count < task.max_retries:
+                    # Can retry - requeue the task
+                    new_retry_count = await self.short_term.increment_task_retry(task_id)
+                    await self.short_term.log_activity(
+                        source="orchestrator",
+                        action="task_retry_scheduled",
+                        details={
+                            "retry_count": new_retry_count,
+                            "max_retries": task.max_retries,
+                            "error": error
+                        },
+                        task_id=task_id
+                    )
+                else:
+                    # Max retries exhausted - mark as failed and escalate
+                    await self.short_term.update_task_status(
+                        task_id,
+                        TaskStatus.FAILED,
+                        result,
+                        f"Max retries ({task.max_retries}) exhausted. Last error: {error}"
+                    )
+
+                    # Escalate to user by creating a question
+                    await self.ask_user(
+                        question=f"Task '{task.title}' failed after {task.max_retries} retries. How should we proceed?",
+                        context=f"Last error: {error}\n\nTask description: {task.description}",
+                        task_id=task_id,
+                        objective_id=task.objective_id,
+                        confidence_score=0.1  # Very low confidence - needs user input
+                    )
+
+                    await self.short_term.log_activity(
+                        source="orchestrator",
+                        action="task_escalated",
+                        details={
+                            "reason": "max_retries_exhausted",
+                            "retry_count": task.retry_count,
+                            "error": error
+                        },
+                        task_id=task_id,
+                        level="warning"
+                    )
+            else:
+                # Task not found - just mark as failed
+                await self.short_term.update_task_status(task_id, TaskStatus.FAILED, result, error)
                 await self.short_term.log_activity(
                     source="orchestrator",
-                    action="task_retry_scheduled",
-                    details={"retry_count": task.retry_count + 1},
-                    task_id=task_id
+                    action="task_failed",
+                    details={"error": error},
+                    task_id=task_id,
+                    worker_id=worker_id
                 )
-
-        await self.short_term.log_activity(
-            source="orchestrator",
-            action="task_completed" if success else "task_failed",
-            details={"result": str(result)[:200] if result else None, "error": error},
-            task_id=task_id,
-            worker_id=worker_id
-        )
 
     # =========================================================================
     # WORKER OPERATIONS

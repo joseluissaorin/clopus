@@ -9,6 +9,30 @@
         "BROWSER_PORT": "${BROWSER_PORT:-9222}"
       }
     },
+    "playwright": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["@playwright/mcp@latest"],
+      "env": {
+        "PLAYWRIGHT_BROWSERS_PATH": "${PLAYWRIGHT_BROWSERS_PATH:-/home/ubuntu/.cache/ms-playwright}"
+      }
+    },
+    "gmail": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["gmail-mcp@latest"],
+      "env": {
+        "GMAIL_CREDENTIALS": "${GMAIL_CREDENTIALS:-/home/ubuntu/.config/gmail/credentials.json}"
+      }
+    },
+    "firecrawl": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["firecrawl-mcp@latest"],
+      "env": {
+        "FIRECRAWL_API_KEY": "${FIRECRAWL_API_KEY}"
+      }
+    },
     "memory": {
       "type": "stdio",
       "command": "node",
