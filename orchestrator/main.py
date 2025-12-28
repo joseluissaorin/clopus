@@ -35,7 +35,7 @@ from .design_system import get_design_system, get_consultation_queue, DesignSyst
 from .project_state import get_state_manager, ProjectStateManager, ProjectState
 from .project_resumption import get_resumption_generator, create_resumption_objective
 from .shared_context import get_shared_context, SharedContextManager
-from .heartbeat_agent import HeartbeatAgent, get_heartbeat_agent
+from .heartbeat_agent import HeartbeatAgent, get_heartbeat_agent, set_heartbeat_worker_pool
 from validation.pipeline import ValidationPipeline
 
 # Configure logging
@@ -187,15 +187,18 @@ class Orchestrator:
         logger.info("Capability installer initialized")
 
         # Initialize heartbeat agent (completion guardian)
+        # Uses worker dispatch (OAuth) instead of direct API calls
         heartbeat_interval = self.settings.heartbeat_config.interval_seconds if hasattr(self.settings, 'heartbeat_config') else 300
         self.heartbeat_agent = get_heartbeat_agent(
             memory=self.memory,
             state_manager=self.state_manager,
             shared_context=self.shared_context,
+            worker_pool=self.worker_pool,
             heartbeat_interval_seconds=heartbeat_interval,
-            workspace_path=self.settings.workspace_path
+            workspace_path=self.settings.workspace_path,
+            ipc_path=self.settings.ipc_path
         )
-        logger.info(f"Heartbeat agent initialized (interval: {heartbeat_interval}s)")
+        logger.info(f"Heartbeat agent initialized (interval: {heartbeat_interval}s, using worker dispatch)")
 
         self.knowledge_base = KnowledgeBase(self.memory, "/app/knowledge")
         logger.info("Knowledge base initialized")

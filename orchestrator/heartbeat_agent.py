@@ -3,7 +3,7 @@
 # =============================================================================
 """
 The Heartbeat Agent is a periodic supervisor that ensures projects actually
-meet their objectives. It uses Claude to:
+meet their objectives. It uses Claude Code workers (via OAuth) to:
 
 1. Parse objectives into concrete requirements
 2. Assess current project state vs requirements
@@ -14,22 +14,28 @@ meet their objectives. It uses Claude to:
 
 This is the "little voice in the head" that asks:
 "Did we actually build what we promised?"
+
+NOTE: This agent does NOT use the Anthropic API directly. Instead, it
+dispatches analysis tasks to Claude Code workers that use OAuth authentication.
 """
 
 import asyncio
 import json
 import re
 import subprocess
+import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
 from dataclasses import dataclass, field
 import logging
-import anthropic
 
 from .project_state import ProjectState, ProjectStateManager, get_state_manager
 from .memory_client import MemoryClient
 from .shared_context import SharedContextManager, get_shared_context
+
+if TYPE_CHECKING:
+    from .worker_pool import WorkerPool
 
 logger = logging.getLogger("clopus.heartbeat")
 
@@ -88,12 +94,14 @@ class HeartbeatAgent:
     """
     Periodic supervisor that ensures projects meet their objectives.
 
-    The Heartbeat Agent runs on a timer and uses Claude to:
+    The Heartbeat Agent runs on a timer and uses Claude Code workers to:
     1. Analyze objectives and extract concrete requirements
     2. Compare requirements with actual project state
     3. Identify gaps and spawn tasks to fill them
     4. Run integration tests for multi-project objectives
     5. Enforce full 8-stage validation before completion
+
+    NOTE: Uses OAuth-authenticated Claude Code workers, NOT the Anthropic API.
     """
 
     # Validation stages that must all pass
@@ -107,18 +115,21 @@ class HeartbeatAgent:
         memory: MemoryClient,
         state_manager: ProjectStateManager,
         shared_context: SharedContextManager,
-        anthropic_client: Optional[anthropic.Anthropic] = None,
+        worker_pool: Optional["WorkerPool"] = None,
         heartbeat_interval_seconds: int = 300,  # 5 minutes default
-        workspace_path: str = "/workspace"
+        workspace_path: str = "/workspace",
+        ipc_path: str = "/app/ipc"
     ):
         self.memory = memory
         self.state_manager = state_manager
         self.shared_context = shared_context
-        self.client = anthropic_client or anthropic.Anthropic()
+        self.worker_pool = worker_pool
         self.heartbeat_interval = heartbeat_interval_seconds
         self.workspace = Path(workspace_path)
+        self.ipc_path = Path(ipc_path)
         self.running = False
         self._last_analysis: Dict[str, GapAnalysis] = {}
+        self._pending_analyses: Dict[str, asyncio.Event] = {}
 
     # =========================================================================
     # MAIN HEARTBEAT LOOP
@@ -284,13 +295,20 @@ class HeartbeatAgent:
         project_path: str,
         state: ProjectState
     ) -> GapAnalysis:
-        """Use Claude to analyze gaps between objective and current state."""
+        """
+        Analyze gaps between objective and current state using a Claude Code worker.
+
+        This dispatches an analysis task to an available worker (preferably researcher)
+        and waits for the result. Uses OAuth authentication, NOT the Anthropic API.
+        """
 
         # Gather current state information
         project_info = await self._gather_project_info(project_path)
 
-        # Build prompt for Claude
-        prompt = f"""You are analyzing a software project to identify gaps between the stated objective and the current implementation.
+        # Build the analysis prompt that will be sent to the worker
+        analysis_prompt = f"""[HEARTBEAT GAP ANALYSIS]
+
+Analyze this project and identify gaps between the objective and current implementation.
 
 ## OBJECTIVE
 {objective.content}
@@ -317,56 +335,140 @@ Stages Passed: {state.validation.get('stages_passed', [])}
 Stages Failed: {state.validation.get('stages_failed', [])}
 Stages Pending: {state.validation.get('stages_pending', [])}
 
-### Project Stages
-{json.dumps(state.stages, indent=2)}
+## REQUIRED OUTPUT
+Write a JSON file to {project_path}/.clopus/heartbeat_analysis.json with:
 
-## YOUR TASK
-Analyze this project and provide a JSON response with:
+```json
+{{
+  "requirements": [
+    {{
+      "id": "req_001",
+      "description": "what needs to be built",
+      "category": "api|frontend|database|integration|testing|documentation",
+      "priority": "critical|high|medium|low",
+      "verification_method": "file_exists|endpoint_works|test_passes",
+      "verification_target": "specific file/endpoint",
+      "is_met": true/false,
+      "evidence": "proof if met"
+    }}
+  ],
+  "suggested_tasks": [
+    {{
+      "title": "task title",
+      "description": "detailed description",
+      "priority": 1-10,
+      "worker_role": "coder|tester|reviewer|debugger|designer|researcher"
+    }}
+  ],
+  "validation_gaps": ["list", "of", "missing", "validation", "stages"],
+  "integration_needed": true/false,
+  "integration_projects": ["project1", "project2"],
+  "overall_completion": 0.0-1.0
+}}
+```
 
-1. **requirements**: List of concrete requirements extracted from the objective. Each should have:
-   - id: unique identifier (req_001, req_002, etc.)
-   - description: what needs to be built
-   - category: api, frontend, database, integration, testing, documentation
-   - priority: critical, high, medium, low
-   - verification_method: how to verify (file_exists, endpoint_works, test_passes, builds_successfully)
-   - verification_target: specific file/endpoint to check
-   - is_met: boolean - is this requirement currently satisfied?
-   - evidence: if met, what proves it
+Analyze carefully and be thorough. Check:
+- Are all features from the objective implemented?
+- Are there API endpoints for all required functionality?
+- Are there tests for the critical paths?
+- Is the frontend connected to the backend (if applicable)?
+- Are all 8 validation stages passing?
+"""
 
-2. **suggested_tasks**: Tasks that should be created to fill gaps. Each should have:
-   - title: concise task title
-   - description: detailed description
-   - priority: 1-10 (1 is highest)
-   - worker_role: coder, tester, reviewer, debugger, designer, researcher
+        # Try to dispatch to a worker or fall back to local analysis
+        if self.worker_pool:
+            try:
+                return await self._dispatch_analysis_to_worker(
+                    objective, project_path, state, analysis_prompt
+                )
+            except Exception as e:
+                logger.warning(f"Worker dispatch failed, using local analysis: {e}")
 
-3. **validation_gaps**: List of validation stages that haven't passed but should
+        # Fallback: Do local analysis without Claude
+        return await self._local_gap_analysis(objective, project_path, state, project_info)
 
-4. **integration_needed**: boolean - does this project need integration testing with other projects?
+    async def _dispatch_analysis_to_worker(
+        self,
+        objective,
+        project_path: str,
+        state: ProjectState,
+        prompt: str
+    ) -> GapAnalysis:
+        """Dispatch gap analysis to a Claude Code worker."""
 
-5. **integration_projects**: if integration_needed, list the project names that need to be tested together
+        # Find an idle researcher worker
+        worker_id = None
+        for wid, worker in self.worker_pool.workers.items():
+            if worker.get("role") == "researcher" and worker.get("status") == "idle":
+                worker_id = wid
+                break
 
-6. **overall_completion**: float 0.0 to 1.0 - how complete is the project vs objective?
+        # If no researcher available, use any idle worker
+        if worker_id is None:
+            for wid, worker in self.worker_pool.workers.items():
+                if worker.get("status") == "idle":
+                    worker_id = wid
+                    break
 
-Respond ONLY with valid JSON, no markdown formatting."""
+        if worker_id is None:
+            logger.warning("No idle workers available for gap analysis")
+            raise RuntimeError("No idle workers available")
 
+        # Create a unique task ID for this analysis
+        task_id = f"heartbeat-{uuid.uuid4().hex[:8]}"
+
+        # Dispatch the task
+        await self.worker_pool.dispatch_task(
+            worker_id=worker_id,
+            task_id=task_id,
+            title=f"Heartbeat analysis for {state.project_name}",
+            description=prompt,
+            cwd=project_path
+        )
+
+        logger.info(f"Dispatched gap analysis to worker {worker_id}")
+
+        # Wait for result (with timeout)
+        result_file = self.ipc_path / "tasks" / str(worker_id) / "result.json"
+        analysis_file = Path(project_path) / ".clopus" / "heartbeat_analysis.json"
+
+        timeout = 120  # 2 minutes
+        start_time = datetime.now()
+
+        while (datetime.now() - start_time).total_seconds() < timeout:
+            # Check if worker completed the task
+            if result_file.exists():
+                try:
+                    result_data = json.loads(result_file.read_text())
+                    if result_data.get("task_id") == task_id:
+                        # Task completed, check for analysis file
+                        if analysis_file.exists():
+                            return self._parse_analysis_file(
+                                analysis_file, objective, project_path
+                            )
+                        break
+                except json.JSONDecodeError:
+                    pass
+
+            await asyncio.sleep(2)
+
+        # If we get here, check if analysis file was created anyway
+        if analysis_file.exists():
+            return self._parse_analysis_file(analysis_file, objective, project_path)
+
+        logger.warning("Gap analysis task timed out or failed")
+        raise RuntimeError("Analysis task timed out")
+
+    def _parse_analysis_file(
+        self,
+        analysis_file: Path,
+        objective,
+        project_path: str
+    ) -> GapAnalysis:
+        """Parse the analysis file created by the worker."""
         try:
-            response = self.client.messages.create(
-                model="claude-sonnet-4-20250514",
-                max_tokens=4096,
-                messages=[{"role": "user", "content": prompt}]
-            )
+            analysis_data = json.loads(analysis_file.read_text())
 
-            # Parse Claude's response
-            response_text = response.content[0].text.strip()
-
-            # Remove markdown code blocks if present
-            if response_text.startswith("```"):
-                response_text = re.sub(r'^```(?:json)?\n?', '', response_text)
-                response_text = re.sub(r'\n?```$', '', response_text)
-
-            analysis_data = json.loads(response_text)
-
-            # Build GapAnalysis from response
             requirements = [
                 Requirement(
                     id=r.get('id', f'req_{i}'),
@@ -398,20 +500,125 @@ Respond ONLY with valid JSON, no markdown formatting."""
                 overall_completion=analysis_data.get('overall_completion', 0.0)
             )
 
-        except json.JSONDecodeError as e:
-            logger.error(f"Failed to parse Claude response: {e}")
+        except (json.JSONDecodeError, KeyError) as e:
+            logger.error(f"Failed to parse analysis file: {e}")
             return GapAnalysis(
                 project_path=project_path,
                 objective_id=objective.id,
                 objective_content=objective.content
             )
-        except Exception as e:
-            logger.error(f"Error in Claude analysis: {e}")
-            return GapAnalysis(
-                project_path=project_path,
-                objective_id=objective.id,
-                objective_content=objective.content
-            )
+
+    async def _local_gap_analysis(
+        self,
+        objective,
+        project_path: str,
+        state: ProjectState,
+        project_info: Dict[str, Any]
+    ) -> GapAnalysis:
+        """
+        Perform local gap analysis without Claude.
+        Uses heuristics to identify obvious gaps.
+        """
+        logger.info("Performing local gap analysis (no worker available)")
+
+        requirements = []
+        suggested_tasks = []
+        validation_gaps = []
+
+        # Check validation stages
+        stages_passed = state.validation.get('stages_passed', [])
+        for stage in self.REQUIRED_VALIDATION_STAGES:
+            if stage not in stages_passed:
+                validation_gaps.append(stage)
+
+        # Check for obvious missing pieces
+        objective_lower = objective.content.lower()
+
+        # Check for API endpoints mentioned in objective
+        if 'api' in objective_lower or 'endpoint' in objective_lower or 'backend' in objective_lower:
+            endpoints = project_info.get('endpoints', '')
+            if 'No endpoints found' in endpoints or not endpoints:
+                requirements.append(Requirement(
+                    id='req_api',
+                    description='API endpoints implementation',
+                    category='api',
+                    priority='critical',
+                    verification_method='endpoint_works',
+                    is_met=False
+                ))
+                suggested_tasks.append({
+                    'title': 'Implement API endpoints',
+                    'description': 'The objective mentions API/backend but no endpoints were found',
+                    'priority': 2,
+                    'worker_role': 'coder'
+                })
+
+        # Check for frontend components
+        if 'frontend' in objective_lower or 'react' in objective_lower or 'ui' in objective_lower:
+            components = project_info.get('components', '')
+            if 'No components found' in components or not components:
+                requirements.append(Requirement(
+                    id='req_frontend',
+                    description='Frontend components implementation',
+                    category='frontend',
+                    priority='critical',
+                    verification_method='file_exists',
+                    is_met=False
+                ))
+                suggested_tasks.append({
+                    'title': 'Implement frontend components',
+                    'description': 'The objective mentions frontend/UI but no components were found',
+                    'priority': 2,
+                    'worker_role': 'coder'
+                })
+
+        # Check for tests
+        test_info = project_info.get('test_info', '')
+        if '0 test files' in test_info or 'No test' in test_info:
+            requirements.append(Requirement(
+                id='req_tests',
+                description='Test coverage',
+                category='testing',
+                priority='high',
+                verification_method='test_passes',
+                is_met=False
+            ))
+            suggested_tasks.append({
+                'title': 'Add test coverage',
+                'description': 'No test files found in the project',
+                'priority': 3,
+                'worker_role': 'tester'
+            })
+
+        # Check for integration (multi-project)
+        integration_needed = False
+        integration_projects = []
+        linked = self.shared_context.get_linked_projects(state.project_name)
+        if linked:
+            integration_needed = True
+            integration_projects = linked
+
+        # Calculate completion
+        total_stages = len(self.REQUIRED_VALIDATION_STAGES)
+        passed_stages = len(stages_passed)
+        overall_completion = passed_stages / total_stages if total_stages > 0 else 0.0
+
+        met = [r for r in requirements if r.is_met]
+        unmet = [r for r in requirements if not r.is_met]
+
+        return GapAnalysis(
+            project_path=project_path,
+            objective_id=objective.id,
+            objective_content=objective.content,
+            requirements=requirements,
+            met_requirements=met,
+            unmet_requirements=unmet,
+            suggested_tasks=suggested_tasks,
+            validation_gaps=validation_gaps,
+            integration_needed=integration_needed,
+            integration_projects=integration_projects,
+            overall_completion=overall_completion
+        )
 
     async def _gather_project_info(self, project_path: str) -> Dict[str, Any]:
         """Gather information about the current project state."""
@@ -911,6 +1118,7 @@ def get_heartbeat_agent(
     memory: Optional[MemoryClient] = None,
     state_manager: Optional[ProjectStateManager] = None,
     shared_context: Optional[SharedContextManager] = None,
+    worker_pool: Optional["WorkerPool"] = None,
     **kwargs
 ) -> HeartbeatAgent:
     """Get or create the heartbeat agent instance."""
@@ -924,7 +1132,15 @@ def get_heartbeat_agent(
             memory=memory,
             state_manager=state_manager,
             shared_context=shared_context,
+            worker_pool=worker_pool,
             **kwargs
         )
 
     return _heartbeat_agent
+
+
+def set_heartbeat_worker_pool(worker_pool: "WorkerPool") -> None:
+    """Set the worker pool for the heartbeat agent after initialization."""
+    global _heartbeat_agent
+    if _heartbeat_agent is not None:
+        _heartbeat_agent.worker_pool = worker_pool
