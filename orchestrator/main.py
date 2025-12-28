@@ -632,7 +632,7 @@ class Orchestrator:
                     if skill:
                         relevant_skills.append(skill)
 
-                # Get relevant memory context
+                # Get relevant memory context (basic lookup)
                 try:
                     memory_context = await self.memory.get_relevant_context(
                         task.title + " " + (task.description or "")
@@ -640,12 +640,29 @@ class Orchestrator:
                 except Exception:
                     pass
 
+                # Inject full context (design system, learnings, API endpoints)
+                enriched_description = task.description or ""
+                if self.context_injector:
+                    try:
+                        task_dict = {
+                            "description": task.description or "",
+                            "prompt": task.title,
+                        }
+                        enriched_task = await self.context_injector.inject_context(
+                            task=task_dict,
+                            worker_role=worker.role,
+                            project_path=project_path
+                        )
+                        enriched_description = enriched_task.get("description", task.description or "")
+                    except Exception as e:
+                        logger.debug(f"Context injection failed: {e}")
+
                 # Dispatch to worker with correct cwd and context
                 await self.worker_pool.dispatch_task(
                     worker.id,
                     task.id,
                     task.title,
-                    task.description,
+                    enriched_description,
                     cwd=project_path,
                     relevant_skills=relevant_skills if relevant_skills else None,
                     memory_context=memory_context
@@ -820,6 +837,28 @@ class Orchestrator:
                                     )
                             except Exception as e:
                                 logger.warning(f"Error learning from outcome: {e}")
+
+                            # =============================================================
+                            # EXTRACT LEARNINGS (ContextInjector - patterns/solutions/warnings)
+                            # =============================================================
+                            if self.context_injector and success:
+                                try:
+                                    task_dict = {
+                                        "id": task.id,
+                                        "title": task.title,
+                                        "description": task.description or "",
+                                    }
+                                    learnings = await self.context_injector.extract_learnings(
+                                        task_result=result,
+                                        task=task_dict,
+                                        worker_role=task.worker_role or "unknown"
+                                    )
+                                    if learnings:
+                                        logger.info(
+                                            f"Extracted {len(learnings)} learnings from task {task.id}"
+                                        )
+                                except Exception as e:
+                                    logger.debug(f"Learning extraction failed: {e}")
 
                             # =============================================================
                             # UPDATE PROJECT STATE ON TASK COMPLETION
