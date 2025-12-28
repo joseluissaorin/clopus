@@ -7,10 +7,13 @@ Combines short-term (SQLite) and long-term (ChromaDB) memory access.
 """
 
 import asyncio
+import logging
 from typing import Any, Dict, List, Optional, Tuple, Union
 from dataclasses import dataclass
 
 from memory import ShortTermMemory, LongTermMemory, EmbeddingEngine
+
+logger = logging.getLogger("clopus.memory_client")
 from memory.short_term import (
     Objective, Task, Worker,
     ObjectiveStatus, TaskStatus, WorkerStatus, ValidationStage
