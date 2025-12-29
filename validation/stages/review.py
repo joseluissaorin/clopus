@@ -112,15 +112,50 @@ Be thorough but concise. Focus on actionable feedback."""
         errors = []
         warnings = []
 
-        # Parse output for issues
+        # Parse output for actual issues, not just keyword matches
         lines = output.split("\n")
-        for line in lines:
-            line_lower = line.lower()
-            if "critical" in line_lower or "error" in line_lower:
-                errors.append(line[:200])
-            elif "warning" in line_lower or "should" in line_lower:
-                warnings.append(line[:200])
+        in_critical_section = False
+        in_warning_section = False
 
+        for line in lines:
+            line_stripped = line.strip()
+            line_lower = line_stripped.lower()
+
+            # Skip empty lines and code blocks
+            if not line_stripped or line_stripped.startswith("```"):
+                continue
+
+            # Skip section headers - they contain keywords but aren't issues themselves
+            if line_stripped.startswith("#") or line_stripped.startswith("##"):
+                in_critical_section = "critical" in line_lower
+                in_warning_section = "warning" in line_lower
+                continue
+
+            # Skip positive statements like "No critical issues" or "No errors found"
+            if any(phrase in line_lower for phrase in [
+                "no critical", "no error", "no issue", "no problem",
+                "looks good", "well structured", "properly", "correctly",
+                "passes", "compiles without error", "builds successfully"
+            ]):
+                continue
+
+            # Skip code snippets (indented lines that look like code)
+            if line_stripped.startswith(("throw ", "return ", "const ", "let ", "var ", "if ", "for ")):
+                continue
+
+            # Collect actual issues based on context
+            if in_critical_section and line_stripped.startswith(("-", "*", "•")):
+                # This is a bullet point in the CRITICAL section
+                issue = line_stripped.lstrip("-*• ").strip()
+                if issue and len(issue) > 5:  # Ignore very short items
+                    errors.append(issue[:200])
+            elif in_warning_section and line_stripped.startswith(("-", "*", "•")):
+                # This is a bullet point in the WARNING section
+                issue = line_stripped.lstrip("-*• ").strip()
+                if issue and len(issue) > 5:
+                    warnings.append(issue[:200])
+
+        # Review passes if no actionable critical issues found
         status = ValidationStatus.FAILED if errors else ValidationStatus.PASSED
 
         return StageResult(

@@ -136,6 +136,12 @@ class HeartbeatAgent:
         self._verificator_client: Optional[VerificatorClient] = None
         self._architectural_verifier: Optional[ArchitecturalVerifier] = None
 
+        # Rate limiting for task spawning - prevents infinite task creation
+        self._last_task_spawn: Dict[str, datetime] = {}  # objective_id -> last spawn time
+        self._task_spawn_counts: Dict[str, int] = {}  # objective_id -> spawn count in current period
+        self._max_spawns_per_hour: int = 10  # Max remediation tasks per objective per hour
+        self._min_spawn_interval: int = 300  # Minimum 5 minutes between spawn attempts
+
     @property
     def verificator_client(self) -> Optional[VerificatorClient]:
         """Get the verificator client (lazily initialized from global)."""
@@ -199,13 +205,46 @@ class HeartbeatAgent:
         logger.info("=== HEARTBEAT CYCLE END ===")
 
     async def _get_active_objectives(self) -> List[Any]:
-        """Get all objectives that are in progress."""
-        # Get from memory
+        """
+        Get all objectives that need monitoring.
+
+        CRITICAL FIX: Now includes FAILED objectives for remediation.
+        Previously only IN_PROGRESS objectives were processed, which meant
+        objectives that failed due to a single task failure would never
+        get a chance to be remediated by the heartbeat.
+        """
         try:
             from memory.short_term import ObjectiveStatus
-            objectives = await self.memory.short_term.get_objectives_by_status(
+            objectives = []
+
+            # Get IN_PROGRESS objectives (active work)
+            in_progress = await self.memory.short_term.get_objectives_by_status(
                 ObjectiveStatus.IN_PROGRESS
             )
+            objectives.extend(in_progress)
+
+            # CRITICAL: Also get FAILED objectives for remediation
+            # These may have recoverable failures that heartbeat can fix
+            failed = await self.memory.short_term.get_objectives_by_status(
+                ObjectiveStatus.FAILED
+            )
+            # Only include failed objectives that have pending/assigned tasks
+            # (meaning they're not truly dead, just need retry)
+            for obj in failed:
+                tasks = await self.memory.short_term.get_tasks_for_objective(obj.id)
+                has_active_tasks = any(
+                    str(t.status) in ('pending', 'assigned', 'in_progress')
+                    for t in tasks
+                )
+                # Also include if there are failed tasks that can be retried
+                has_failed_retryable = any(
+                    str(t.status) == 'failed' and (t.retry_count or 0) < 3
+                    for t in tasks
+                )
+                if has_active_tasks or has_failed_retryable:
+                    logger.info(f"Including FAILED objective for remediation: {obj.id[:8]}")
+                    objectives.append(obj)
+
             return objectives
         except Exception as e:
             logger.error(f"Error getting active objectives: {e}")
@@ -478,9 +517,14 @@ class HeartbeatAgent:
         1. Explicit path in objective content (/workspace/xxx)
         2. Explicit path in objective metadata
         3. Project name matching from objective keywords
-        4. Verificator-based intelligent matching (Claude-powered)
+        4. Verificator-based intelligent matching (AI-First, Claude-powered)
         5. Path from associated tasks
-        6. Most recently modified project (fallback)
+        6. Keyword-based matching (DEPRECATED fallback)
+        7. Most recently modified project (last resort)
+
+        AI-FIRST APPROACH (v3.3):
+        - Verificator uses semantic understanding to match projects
+        - Keyword matching is only a fallback when AI unavailable
         """
         objective_lower = objective.content.lower()
 
@@ -495,8 +539,7 @@ class HeartbeatAgent:
         if objective.metadata and 'project_path' in objective.metadata:
             return objective.metadata['project_path']
 
-        # Priority 3: Project name matching from objective keywords
-        # Look for project names that match common patterns
+        # Gather available projects
         available_projects = []
         if self.workspace.exists():
             available_projects = [
@@ -505,29 +548,14 @@ class HeartbeatAgent:
                 and ((p / "package.json").exists() or (p / "requirements.txt").exists() or (p / ".clopus").exists())
             ]
 
+        # Priority 3: Direct name mention in objective
         for project in available_projects:
             project_name = project.name.lower()
-
-            # Check for direct name mention
             if project_name in objective_lower:
                 logger.info(f"Matched project '{project.name}' from objective content")
                 return str(project)
 
-            # Check for common patterns based on project type indicators
-            # Frontend patterns
-            if any(x in objective_lower for x in ['react', 'frontend', 'web app', 'dashboard', 'ui']):
-                if any(x in project_name for x in ['web', 'frontend', 'app', 'ui', 'client']):
-                    if 'api' not in project_name and 'backend' not in project_name:
-                        logger.info(f"Matched frontend project '{project.name}' from objective keywords")
-                        return str(project)
-
-            # Backend patterns
-            if any(x in objective_lower for x in ['fastapi', 'backend', 'api server', 'rest api']):
-                if any(x in project_name for x in ['api', 'backend', 'server', 'service']):
-                    logger.info(f"Matched backend project '{project.name}' from objective keywords")
-                    return str(project)
-
-        # Priority 4: Verificator-based intelligent matching
+        # Priority 4: AI-First Verificator-based intelligent matching
         if self.verificator_client and available_projects:
             try:
                 project_info = [
@@ -544,8 +572,8 @@ class HeartbeatAgent:
                     objective_content=objective.content,
                     available_projects=project_info
                 )
-                if matched_path and confidence > 0.6:
-                    logger.info(f"Verificator matched project: {matched_path} (confidence: {confidence})")
+                if matched_path and confidence > 0.5:  # Lower threshold for AI matching
+                    logger.info(f"AI-first matched project: {matched_path} (confidence: {confidence})")
                     return matched_path
             except Exception as e:
                 logger.debug(f"Verificator project matching failed: {e}")
@@ -560,7 +588,25 @@ class HeartbeatAgent:
                     if Path(project_path).exists():
                         return project_path
 
-        # Priority 6: Fallback - Most recently modified project
+        # Priority 6: DEPRECATED Keyword-based matching (fallback only)
+        logger.debug("Using deprecated keyword-based project matching")
+        for project in available_projects:
+            project_name = project.name.lower()
+
+            # Frontend patterns (deprecated)
+            if any(x in objective_lower for x in ['react', 'frontend', 'web app', 'dashboard', 'ui']):
+                if any(x in project_name for x in ['web', 'frontend', 'app', 'ui', 'client']):
+                    if 'api' not in project_name and 'backend' not in project_name:
+                        logger.warning(f"Keyword-matched frontend project '{project.name}' (deprecated)")
+                        return str(project)
+
+            # Backend patterns (deprecated)
+            if any(x in objective_lower for x in ['fastapi', 'backend', 'api server', 'rest api']):
+                if any(x in project_name for x in ['api', 'backend', 'server', 'service']):
+                    logger.warning(f"Keyword-matched backend project '{project.name}' (deprecated)")
+                    return str(project)
+
+        # Priority 7: Last resort - Most recently modified project
         if available_projects:
             available_projects.sort(key=lambda p: p.stat().st_mtime, reverse=True)
             logger.warning(
@@ -1031,7 +1077,50 @@ Analyze carefully and be thorough. Check:
         objective,
         gap_analysis: GapAnalysis
     ) -> None:
-        """Create tasks to address unmet requirements."""
+        """Create tasks to address unmet requirements.
+
+        RATE LIMITING: Prevents infinite task creation by:
+        1. Enforcing minimum interval between spawn attempts (5 minutes)
+        2. Limiting max spawns per objective per hour (10)
+        """
+        objective_id = objective.id
+        now = datetime.now()
+
+        # =================================================================
+        # RATE LIMITING CHECK
+        # =================================================================
+
+        # Check 1: Minimum interval between spawns
+        last_spawn = self._last_task_spawn.get(objective_id)
+        if last_spawn:
+            seconds_since_last = (now - last_spawn).total_seconds()
+            if seconds_since_last < self._min_spawn_interval:
+                logger.info(
+                    f"Rate limit: Skipping spawn for {objective_id[:8]} - "
+                    f"only {int(seconds_since_last)}s since last spawn "
+                    f"(min: {self._min_spawn_interval}s)"
+                )
+                return
+
+        # Check 2: Max spawns per hour
+        spawn_count = self._task_spawn_counts.get(objective_id, 0)
+        if spawn_count >= self._max_spawns_per_hour:
+            # Check if we can reset the counter (been more than 1 hour since first spawn)
+            first_spawn_in_period = self._last_task_spawn.get(objective_id)
+            if first_spawn_in_period:
+                hours_elapsed = (now - first_spawn_in_period).total_seconds() / 3600
+                if hours_elapsed >= 1:
+                    # Reset the counter for new hour
+                    self._task_spawn_counts[objective_id] = 0
+                    spawn_count = 0
+                    logger.info(f"Rate limit: Reset spawn counter for {objective_id[:8]} (new hour)")
+                else:
+                    logger.warning(
+                        f"Rate limit: Objective {objective_id[:8]} hit max spawns "
+                        f"({self._max_spawns_per_hour}/hour). "
+                        f"Wait {int(60 - hours_elapsed * 60)} minutes."
+                    )
+                    return
 
         if not gap_analysis.suggested_tasks:
             # Generate tasks from unmet requirements
@@ -1094,44 +1183,56 @@ Please implement this requirement and ensure it passes verification.
                         f"Ignoring unverified completed task for dedup: {t.title}"
                     )
 
-        # Helper function for fuzzy title matching (with semantic fallback via verificator)
+        # AI-First duplicate detection with semantic understanding
         async def is_duplicate(new_title: str, new_description: str = "") -> bool:
+            """
+            AI-FIRST duplicate detection (v3.3).
+
+            Priority:
+            1. Exact title match (always block)
+            2. AI semantic check via Verificator (primary)
+            3. Word overlap check (deprecated fallback)
+            """
             new_lower = new_title.lower()
-            # Extract key terms (remove common prefixes)
-            new_key = new_lower.replace('implement:', '').replace('implement ', '').strip()
-            new_key = new_key.replace('write ', '').replace('create ', '').replace('add ', '').strip()
 
-            for existing in existing_titles:
-                # Direct match
-                if new_lower == existing:
-                    return True
-                # Substring match (either direction)
-                if new_key in existing or existing in new_lower:
-                    return True
-                # Key term overlap (at least 60% of words match)
-                new_words = set(new_key.split())
-                existing_words = set(existing.split())
-                if new_words and existing_words:
-                    overlap = len(new_words & existing_words)
-                    if overlap >= 0.6 * min(len(new_words), len(existing_words)):
-                        return True
+            # Priority 1: Exact match is always a duplicate
+            if new_lower in existing_titles:
+                return True
 
-            # If no word-based match, try semantic check via verificator (for edge cases)
-            if self.verificator_client and new_description:
+            # Priority 2: AI-First semantic check via Verificator
+            if self.verificator_client:
                 try:
-                    # Check against the most similar-looking existing tasks
-                    for existing in list(existing_titles)[:5]:  # Limit to avoid too many checks
+                    # Check against existing tasks using AI understanding
+                    for existing in list(existing_titles)[:10]:  # Check more for better coverage
                         is_dup, confidence = await self.verificator_client.check_duplicate(
                             task1_title=new_title,
                             task1_description=new_description,
                             task2_title=existing,
-                            task2_description=""  # We don't have description for existing
+                            task2_description=""
                         )
-                        if is_dup and confidence > 0.7:
-                            logger.debug(f"Semantic duplicate found: '{new_title}' ~ '{existing}' (conf: {confidence})")
+                        if is_dup and confidence > 0.6:  # Lower threshold - AI is smart
+                            logger.info(f"AI detected duplicate: '{new_title}' ~ '{existing}' (conf: {confidence})")
                             return True
                 except Exception as e:
-                    logger.debug(f"Semantic duplicate check failed: {e}")
+                    logger.debug(f"AI duplicate check failed, falling back to word matching: {e}")
+
+            # Priority 3: DEPRECATED word-based matching (fallback only)
+            new_key = new_lower.replace('implement:', '').replace('implement ', '').strip()
+            new_key = new_key.replace('write ', '').replace('create ', '').replace('add ', '').strip()
+
+            for existing in existing_titles:
+                # Substring match (either direction)
+                if new_key in existing or existing in new_lower:
+                    logger.debug(f"Word-based duplicate (deprecated): '{new_title}' ~ '{existing}'")
+                    return True
+                # Word overlap (80% threshold to reduce false positives)
+                new_words = set(new_key.split())
+                existing_words = set(existing.split())
+                if new_words and existing_words:
+                    overlap = len(new_words & existing_words)
+                    if overlap >= 0.8 * min(len(new_words), len(existing_words)):
+                        logger.debug(f"Word-overlap duplicate (deprecated): '{new_title}' ~ '{existing}'")
+                        return True
 
             return False
 
@@ -1155,15 +1256,28 @@ Please implement this requirement and ensure it passes verification.
             logger.info(f"Spawning {len(tasks_to_create)} remediation tasks for objective {objective.id}")
             await self.memory.create_tasks(objective.id, tasks_to_create)
 
+            # =================================================================
+            # UPDATE RATE LIMITING TRACKING
+            # =================================================================
+            self._last_task_spawn[objective_id] = now
+            self._task_spawn_counts[objective_id] = self._task_spawn_counts.get(objective_id, 0) + 1
+            logger.debug(
+                f"Rate limit tracking: {objective_id[:8]} spawned batch "
+                f"({self._task_spawn_counts[objective_id]}/{self._max_spawns_per_hour} this hour)"
+            )
+
             await self.memory.log_activity(
                 source="heartbeat",
                 action="tasks_spawned",
                 details={
                     "objective_id": objective.id,
                     "task_count": len(tasks_to_create),
-                    "task_titles": [t['title'] for t in tasks_to_create]
+                    "task_titles": [t['title'] for t in tasks_to_create],
+                    "spawn_count_this_hour": self._task_spawn_counts[objective_id]
                 }
             )
+        else:
+            logger.debug(f"No new remediation tasks to spawn for {objective_id[:8]} (all duplicates or empty)")
 
     def _get_worker_role_for_category(self, category: str) -> str:
         """Map requirement category to worker role."""

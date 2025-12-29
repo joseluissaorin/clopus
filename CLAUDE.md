@@ -1219,6 +1219,73 @@ Verificator timeouts now return error info for retry handling:
 
 ---
 
+## AI-FIRST VALIDATION (NEW in v3.3)
+
+Validation output parsing now uses semantic understanding instead of naive keyword matching.
+
+### The Problem (Before v3.3)
+
+Validation stages used naive keyword matching that caused false positives:
+- Any line containing "error" was marked as an error (even `error_handler.ts` or "0 errors found")
+- Review parser matched headers like `## CRITICAL Issues` as actual issues
+- Test output parsing matched `PASS` keyword in any context
+- Security scanner flagged code comments containing "password"
+
+### The Solution (AI-First v3.3)
+
+| File | What Changed |
+|------|--------------|
+| `validation/stages/base.py` | Semantic patterns for error/warning detection; success patterns filter false positives |
+| `validation/stages/lint.py` | Uses JSON output from ESLint, Ruff, golangci-lint, Clippy |
+| `validation/stages/unit_tests.py` | Parses JSON reporters from Jest/Vitest/pytest |
+| `validation/stages/security.py` | Context-aware checks that skip test files, comments, and false positive patterns |
+| `validation/stages/review.py` | Section-aware parsing (CRITICAL/WARNING headers vs actual issues) |
+| `orchestrator/heartbeat_agent.py` | Verificator AI is now primary for project matching and duplicate detection |
+
+### Key Improvements
+
+**Exit codes are primary indicators:**
+```python
+# Before: relied on keyword matching
+if "error" in output:
+    errors.append(line)
+
+# After: exit code + semantic patterns
+if returncode != 0:
+    errors = self.parse_errors(output, returncode)  # Uses semantic patterns
+```
+
+**JSON output parsing:**
+```python
+# ESLint with JSON
+cmd = ["eslint", ".", "--format", "json"]
+results = json.loads(stdout)
+for file_result in results:
+    for msg in file_result.get("messages", []):
+        if msg.get("severity") == 2:  # Error
+            errors.append(...)
+```
+
+**Context-aware security scanning:**
+```python
+SECURITY_CHECKS = [
+    {
+        "pattern": r'password\s*=\s*["\'][^"\']+["\']',
+        "skip_in": ["test", "example", "mock"],
+        "skip_patterns": [r"placeholder", r"your_password"],
+    }
+]
+```
+
+**AI-First duplicate detection:**
+```python
+# Priority 1: Exact match
+# Priority 2: Verificator semantic check (primary)
+# Priority 3: Word overlap (deprecated fallback, 80% threshold)
+```
+
+---
+
 ## LESSONS LEARNED
 
 **2025-12-27 (Morning)**: Project was accidentally deleted by running `rm -rf` inside a Docker container on a volume-mounted `/workspace` directory. This affected the host filesystem.
@@ -1245,6 +1312,17 @@ Workspace is now isolated to `~/Dev/clopus-projects` to prevent future accidents
 4. **Result collection race condition** (`orchestrator/worker_pool.py:860-872`): Verification result collector was picking up results from other tasks due to shared result file. Fixed by validating task_id before accepting results.
 5. **Missing worker acknowledgment** (`workers/worker-entrypoint.sh:291-293`): Workers never wrote `ack.json` that the orchestrator expected, causing 10s timeout and task dispatch failures. Fixed by adding immediate acknowledgment after reading pending.json.
 6. **Missing directory handling** (`workers/worker-entrypoint.sh:322-340`): Worker crashed with `cd: No such file or directory` when task had invalid cwd. Fixed by adding directory existence check with fallback to `/workspace`.
+
+**2025-12-29**: Validation stages were failing due to naive keyword matching. Two root causes:
+1. **Project directory permissions** (`orchestrator/project_setup.py`, `orchestrator/project_state.py`): Project directories were created by orchestrator (root) but workers run as ubuntu (uid 1000). Workers couldn't write files, so they created alternate directories. Fixed by adding `shutil.chown(path, user=1000, group=1000)` after directory creation.
+2. **Review validation false positives** (`validation/stages/review.py`): Parser matched any line containing "error" or "critical" as failures - including headers like `## CRITICAL Issues` and code like `throw new Error()`. Fixed with section-aware parsing that only counts bullet points under CRITICAL/WARNING headers as actual issues.
+
+Additionally, removed naive keyword matching throughout the codebase:
+- `validation/stages/base.py`: Added semantic SUCCESS_PATTERNS and ERROR_PATTERNS
+- `validation/stages/lint.py`: Now uses JSON output from linters
+- `validation/stages/unit_tests.py`: Parses JSON from test reporters
+- `validation/stages/security.py`: Context-aware scanning with skip lists
+- `orchestrator/heartbeat_agent.py`: Verificator AI is now primary for project matching and duplicate detection (keyword matching demoted to fallback)
 
 ---
 

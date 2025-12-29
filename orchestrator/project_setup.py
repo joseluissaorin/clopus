@@ -125,6 +125,16 @@ class ProjectSetup:
         path = Path(project_path)
         path.mkdir(parents=True, exist_ok=True)
 
+        # Fix permissions: workers run as ubuntu (uid 1000), not root
+        # This ensures workers can write to the project directory
+        import os
+        import shutil
+        try:
+            # Change ownership to ubuntu:ubuntu (uid/gid 1000)
+            shutil.chown(path, user=1000, group=1000)
+        except (PermissionError, OSError) as e:
+            logger.warning(f"Could not change ownership of {path}: {e}")
+
         # Detect or use provided project type
         if not project_type:
             project_type = await self._detect_project_type(path, objective_content)
@@ -133,6 +143,12 @@ class ProjectSetup:
         claude_md = await self._generate_claude_md(path, objective_content, project_type)
         claude_md_path = path / "CLAUDE.md"
         claude_md_path.write_text(claude_md)
+
+        # Fix file ownership to match worker user (ubuntu, uid 1000)
+        try:
+            shutil.chown(claude_md_path, user=1000, group=1000)
+        except (PermissionError, OSError) as e:
+            logger.warning(f"Could not change ownership of {claude_md_path}: {e}")
 
         logger.info(f"Created CLAUDE.md for project: {path}")
         return claude_md_path

@@ -241,11 +241,26 @@ class ProjectStateManager:
 
     async def save_state(self, state: ProjectState) -> None:
         """Save project state to disk."""
+        import shutil
+
         state_file = self.get_state_path(state.project_path)
         state_file.parent.mkdir(parents=True, exist_ok=True)
 
+        # Fix permissions: workers run as ubuntu (uid 1000), not root
+        try:
+            shutil.chown(state_file.parent, user=1000, group=1000)
+        except (PermissionError, OSError):
+            pass  # May fail if not root, that's OK
+
         state.update_activity()
         state_file.write_text(json.dumps(state.to_dict(), indent=2))
+
+        # Fix file permissions too
+        try:
+            shutil.chown(state_file, user=1000, group=1000)
+        except (PermissionError, OSError):
+            pass
+
         self._states[state.project_path] = state
 
         logger.debug(f"Saved state for {state.project_name}")

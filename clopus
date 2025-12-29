@@ -74,6 +74,7 @@ ${BOLD}COMMANDS:${NC}
     ${GREEN}login${NC}              Authenticate with Claude
     ${GREEN}logout${NC}             Clear authentication
 
+    ${GREEN}reset${NC}              Reset all objectives, projects, and tasks
     ${GREEN}setup${NC}              Run initial setup
     ${GREEN}update${NC}             Update CLOPUS
     ${GREEN}version${NC}            Show version
@@ -642,6 +643,106 @@ cmd_sync() {
     log_success "Sync complete!"
 }
 
+# Reset command - clears all objectives, projects, and tasks
+cmd_reset() {
+    local force=false
+    local keep_chromadb=false
+
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            -f|--force)
+                force=true
+                shift
+                ;;
+            --keep-chromadb)
+                keep_chromadb=true
+                shift
+                ;;
+            *)
+                shift
+                ;;
+        esac
+    done
+
+    if ! $force; then
+        echo -e "${YELLOW}${BOLD}WARNING: This will delete:${NC}"
+        echo "  - All pending objectives"
+        echo "  - All projects in /workspace"
+        echo "  - All tasks and objectives in the database"
+        echo "  - All IPC task files"
+        if ! $keep_chromadb; then
+            echo "  - All ChromaDB memory collections"
+        fi
+        echo ""
+        read -p "Are you sure you want to reset? (y/N): " confirm
+        if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+            log_info "Reset cancelled."
+            return 0
+        fi
+    fi
+
+    log_info "Resetting CLOPUS..."
+
+    # 1. Stop the orchestrator
+    log_info "Stopping orchestrator..."
+    dc stop orchestrator 2>/dev/null || true
+
+    # 2. Clear objective files
+    log_info "Clearing objectives..."
+    rm -f "$SCRIPT_DIR/objectives"/*.md 2>/dev/null || true
+    rm -f "$SCRIPT_DIR/objectives/processed"/*.md 2>/dev/null || true
+
+    # 3. Clear question/answer files
+    log_info "Clearing questions and answers..."
+    rm -f "$SCRIPT_DIR/questions"/*.md 2>/dev/null || true
+    rm -f "$SCRIPT_DIR/answers"/*.md 2>/dev/null || true
+
+    # 4. Clear IPC files for all workers
+    log_info "Clearing IPC files..."
+    for i in {1..11}; do
+        rm -f "$SCRIPT_DIR/ipc/tasks/$i/pending.json" 2>/dev/null || true
+        rm -f "$SCRIPT_DIR/ipc/tasks/$i/result.json" 2>/dev/null || true
+        rm -f "$SCRIPT_DIR/ipc/tasks/$i/result.collected" 2>/dev/null || true
+        rm -f "$SCRIPT_DIR/ipc/tasks/$i/ack.json" 2>/dev/null || true
+        rm -f "$SCRIPT_DIR/ipc/tasks/$i/cancel" 2>/dev/null || true
+    done
+
+    # 5. Clear projects in /workspace via Docker
+    log_info "Clearing projects..."
+    docker compose exec -T --user root worker-1 bash -c 'rm -rf /workspace/*' 2>/dev/null || true
+
+    # 6. Clear SQLite database
+    log_info "Clearing database..."
+    rm -f "$SCRIPT_DIR/data/sqlite/clopus.db" 2>/dev/null || true
+    # Also try via Docker if host file doesn't exist
+    docker compose exec -T --user root worker-1 bash -c 'rm -f /app/data/sqlite/clopus.db' 2>/dev/null || true
+
+    # 7. Optionally clear ChromaDB
+    if ! $keep_chromadb; then
+        log_info "Clearing ChromaDB..."
+        # Delete and recreate ChromaDB volume
+        docker compose stop chromadb 2>/dev/null || true
+        docker volume rm clopus_chromadb_data 2>/dev/null || true
+        docker compose up -d chromadb 2>/dev/null || true
+        sleep 2
+    fi
+
+    # 8. Restart workers to clear their state
+    log_info "Restarting workers..."
+    for i in {1..11}; do
+        dc restart "worker-$i" 2>/dev/null &
+    done
+    wait
+
+    # 9. Start orchestrator
+    log_info "Starting orchestrator..."
+    dc start orchestrator 2>/dev/null || true
+    sleep 3
+
+    log_success "Reset complete! CLOPUS is ready for a fresh start."
+    log_info "Submit a new objective with: ./clopus objective \"Your task here\""
+}
+
 # Main
 main() {
     # Ensure we're in the script directory
@@ -703,6 +804,10 @@ main() {
             ;;
         sync)
             cmd_sync
+            ;;
+        reset)
+            shift
+            cmd_reset "$@"
             ;;
         login)
             cmd_login
