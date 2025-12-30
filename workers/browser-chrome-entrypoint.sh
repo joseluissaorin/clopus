@@ -109,7 +109,17 @@ fi
 # =============================================================================
 echo "[Chrome Worker $WORKER_ID] Starting task polling loop..."
 
+# Heartbeat counter - update status every ~5 seconds (10 iterations)
+HEARTBEAT_COUNTER=0
+
 while true; do
+    # Periodic heartbeat to prevent stale worker detection
+    HEARTBEAT_COUNTER=$((HEARTBEAT_COUNTER + 1))
+    if [ $HEARTBEAT_COUNTER -ge 10 ]; then
+        update_status "idle" ""
+        HEARTBEAT_COUNTER=0
+    fi
+
     # Check for pending task
     if [ -f "$PENDING_FILE" ]; then
         echo "[Chrome Worker $WORKER_ID] Found pending task..."
