@@ -47,10 +47,11 @@ COPY --chown=ubuntu:ubuntu workers/.mcp.json /workspace/.mcp.json
 RUN chmod +x /app/hooks/*.sh 2>/dev/null || true
 
 # =============================================================================
-# Entry Point Script
+# Entry Point Scripts
 # =============================================================================
 COPY --chown=ubuntu:ubuntu workers/worker-entrypoint.sh /app/worker-entrypoint.sh
-RUN chmod +x /app/worker-entrypoint.sh
+COPY workers/init-permissions.sh /app/init-permissions.sh
+RUN chmod +x /app/worker-entrypoint.sh /app/init-permissions.sh
 
 # =============================================================================
 # Environment
@@ -61,7 +62,6 @@ ENV IPC_PATH=/app/ipc
 ENV HOME=/home/ubuntu
 ENV PLAYWRIGHT_BROWSERS_PATH=/home/ubuntu/.cache/ms-playwright
 
-# Switch to non-root user for Claude Code
-USER ubuntu
-
-CMD ["/app/worker-entrypoint.sh"]
+# Run as root initially to fix volume permissions, then drop to ubuntu
+# The init-permissions.sh script handles the user switch
+CMD ["/app/init-permissions.sh"]

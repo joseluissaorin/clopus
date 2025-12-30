@@ -89,7 +89,8 @@ RUN chmod +x /app/hooks/*.sh 2>/dev/null || true
 # Entry Point Script
 # =============================================================================
 COPY --chown=ubuntu:ubuntu workers/browser-chrome-entrypoint.sh /app/browser-chrome-entrypoint.sh
-RUN chmod +x /app/browser-chrome-entrypoint.sh
+COPY workers/init-browser-chrome.sh /app/init-browser-chrome.sh
+RUN chmod +x /app/browser-chrome-entrypoint.sh /app/init-browser-chrome.sh
 
 # =============================================================================
 # Environment
@@ -106,7 +107,6 @@ ENV BROWSER_MODE=vnc
 # VNC and noVNC ports
 EXPOSE 5900 6080
 
-# Switch to non-root user
-USER ubuntu
-
-CMD ["/app/browser-chrome-entrypoint.sh"]
+# Run as root initially to fix volume permissions, then drop to ubuntu
+# The init-browser-chrome.sh script handles the user switch
+CMD ["/app/init-browser-chrome.sh"]

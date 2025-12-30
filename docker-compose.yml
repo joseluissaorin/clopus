@@ -88,6 +88,7 @@ services:
     container_name: clopus-orchestrator
     ports:
       - "8765:8765"  # WebSocket server for TUI
+      - "3100-3199:3100-3199"  # Dev server port range for projects
     volumes:
       - ./:/app
       - workspace:/workspace

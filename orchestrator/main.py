@@ -2134,6 +2134,13 @@ echo $! > {project / ".clopus" / "dev_server.pid"}
                         "started_at": str(datetime.now())
                     }))
 
+                    # Update project state
+                    await self.state_manager.update_dev_server(
+                        str(project),
+                        running=True,
+                        port=port
+                    )
+
         except Exception as e:
             logger.error(f"Error starting dev server: {e}")
 
@@ -2554,17 +2561,9 @@ echo $! > {project / ".clopus" / "dev_server.pid"}
             # Dev server tasks
             elif "dev server" in task_title_lower or "start server" in task_title_lower:
                 if success:
-                    # Get the allocated port
-                    port_manager = get_port_manager()
-                    project_name = Path(project_path).name
-                    port = port_manager.get_project_port(project_name)
-                    await self.state_manager.update_dev_server(
-                        project_path,
-                        running=True,
-                        port=port,
-                        url=f"http://localhost:{port}"
-                    )
-                    logger.info(f"Updated project state: dev server running on port {port} for {project_path}")
+                    # Actually start the dev server
+                    await self._start_project_dev_server(project_path)
+                    logger.info(f"Dev server started for {project_path}")
 
             # Implementation/coding tasks
             elif task.worker_role == "coder" and success:
