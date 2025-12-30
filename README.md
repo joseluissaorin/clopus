@@ -83,8 +83,9 @@ Traditional AI coding assistants require constant human guidance. CLOPUS takes a
 ## Features
 
 ### Multi-Agent Architecture
-- **11 Parallel Workers**: 6 core roles (Coder, Tester, Reviewer, Researcher, Debugger, Designer) + 5 reserved workers
-- **Reserved Workers**: Heartbeat, Verificator, Browser-Headless, Browser-Chrome, Services
+- **11 Parallel Workers**: 6 core roles (Coder, Tester, Reviewer, Researcher, Debugger, Designer) + 2 browser workers + 3 reserved
+- **Browser Workers**: Browser-Headless (Worker 9) and Browser-Chrome (Worker 10) are now assignable for visual testing tasks
+- **Reserved Workers**: Heartbeat, Verificator, Services (not assignable for regular tasks)
 - **Inter-Worker Collaboration**: Workers can communicate, ask each other for help, and share knowledge
 - **Intelligent Task Distribution**: Orchestrator assigns tasks based on worker specialization and workload
 - **File-Based IPC**: Simple, debuggable communication via JSON files with acknowledgment handshake
@@ -128,7 +129,16 @@ Every piece of generated code passes through:
 ### Browser Automation
 - **Worker 9 (Browser-Headless)**: Playwright-based automation for fast, headless web tasks
 - **Worker 10 (Browser-Chrome)**: Chrome with VNC for visual debugging and Claude extension support
+  - **VNC Access**: noVNC at http://localhost:6280, VNC client at localhost:5920
+  - **Auto-Start**: Chrome launches automatically on container boot
 - **MCP Servers**: Playwright MCP, Gmail MCP, Firecrawl MCP for comprehensive web/email automation
+- **Task Assignment**: AI planner can assign tasks directly to browser workers for visual testing
+
+### Permission System (v3.3)
+- **Blocklist Approach**: All Bash commands allowed except dangerous ones
+- **Blocked Commands**: `rm -rf /`, `sudo`, `shutdown`, `reboot`, `mkfs`, `dd if=/dev/zero`
+- **Role-Specific Settings**: Each worker role has its own settings file (settings.coder.json, etc.)
+- **Docker Isolation**: Container boundaries provide additional security layer
 
 ### Terminal User Interface (TUI)
 - **10 Screens**: Dashboard, Workers, Projects, Tasks, Logs, Objectives, Memory, Questions, Config, Browser
@@ -496,8 +506,9 @@ Done! Project available at: /workspace/projects/blog-nextjs
 
 **Tier 1 (Always Running)**:
 - Orchestrator
-- 6 Claude Code Workers (Coder, Tester, Reviewer, Researcher, Debugger, Designer)
-- 5 Reserved Workers (Heartbeat, Verificator, Browser-Headless, Browser-Chrome, Services)
+- 6 Core Claude Code Workers (Coder, Tester, Reviewer, Researcher, Debugger, Designer)
+- 2 Browser Workers (Browser-Headless, Browser-Chrome) - assignable for visual testing
+- 3 Reserved Workers (Heartbeat, Verificator, Services)
 - SQLite
 - ChromaDB
 
@@ -524,8 +535,8 @@ Each worker runs a full Claude Code instance with role-specific system prompts a
 | Worker 6 | **Designer** | Branding, design systems, visual consistency | design-system, ui-ux |
 | Worker 7 | **Heartbeat** *(reserved)* | Gap analysis, completion verification | objective-analysis, integration-testing |
 | Worker 8 | **Verificator** *(reserved)* | Intelligent verification, deduplication | artifact-verification, semantic-analysis |
-| Worker 9 | **Browser-Headless** *(reserved)* | Playwright automation, web scraping | playwright-mcp, web-scraping |
-| Worker 10 | **Browser-Chrome** *(reserved)* | Chrome + VNC, visual debugging | chrome-automation, vnc-access |
+| Worker 9 | **Browser-Headless** | Playwright automation, web scraping, headless testing | playwright-mcp, web-scraping |
+| Worker 10 | **Browser-Chrome** | Chrome + VNC, visual debugging, interactive testing | chrome-automation, vnc-access |
 | Worker 11 | **Services** *(reserved)* | Email, calendar, API integrations | gmail-mcp, firecrawl-mcp, calendar-mcp |
 
 Workers communicate via file-based IPC:
@@ -1307,9 +1318,9 @@ ONESIGNAL_APP_ID=...
 workers:
   count: 11
   roles: [coder, tester, reviewer, researcher, debugger, designer, heartbeat, verificator, browser-headless, browser-chrome, services]
-  reserved_roles: [heartbeat, verificator, browser-headless, browser-chrome, services]
+  reserved_roles: [heartbeat, verificator, services]  # Browser workers are now assignable
   heartbeat_interval: 30
-  task_timeout: 3600
+  task_timeout: 1800  # 30-minute default timeout
 
 memory:
   sqlite_path: ./data/clopus.db
@@ -1466,7 +1477,7 @@ docker-compose build
 
 ## Roadmap
 
-### v3.2 (Current)
+### v3.3 (Current)
 - [x] Terminal User Interface (TUI) *(implemented)* - 10-screen Textual-based interface with real-time updates
 - [x] AI-First Planning *(implemented)* - Claude-powered task planning replaces pattern matching
 - [x] Claude Code Integration *(implemented)* - Session continuity, hooks, role-specific permissions
@@ -1479,11 +1490,16 @@ docker-compose build
 - [x] Inter-Worker Collaboration *(implemented)* - Workers can communicate, request browser automation, share knowledge
 - [x] Context Injection *(implemented)* - Pre-task memory search for relevant patterns and solutions
 - [x] Collaboration MCP Server *(implemented)* - 9 tools for ask_worker, spawn_subtask, browser automation
+- [x] **Permission Blocklist System** *(v3.3)* - Changed from allowlist to blocklist; workers can run any command except dangerous ones
+- [x] **Browser Workers Assignable** *(v3.3)* - Browser-headless and browser-chrome can now receive tasks from AI planner
+- [x] **Chrome Auto-Start** *(v3.3)* - Worker-10 auto-starts Chrome on boot with VNC access at localhost:6280
+- [x] **Task Timeout Protection** *(v3.3)* - 30-minute default timeout prevents indefinite task hangs
+- [x] **AI-First Validation** *(v3.3)* - Semantic output parsing replaces naive keyword matching
 - [ ] Web UI dashboard
 - [ ] Cost tracking and budgets
 - [ ] Custom worker roles
 
-### v3.3
+### v3.4
 - [ ] Cloud deployment (AWS, GCP)
 - [ ] Team collaboration features
 - [ ] Webhook notifications

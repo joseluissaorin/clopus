@@ -98,7 +98,7 @@ validation:
 # Confidence Engine
 # =============================================================================
 confidence:
-  threshold: 0.7
+  threshold: 0.4  # Lowered to avoid unnecessary clarification questions
   learning_enabled: true
   weights:
     similar_past_decisions: 0.25

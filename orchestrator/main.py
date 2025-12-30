@@ -76,6 +76,15 @@ class Orchestrator:
         self.running = False
         self._shutdown_event = asyncio.Event()
 
+        # =================================================================
+        # AUTHENTICATION STATE TRACKING (NEW)
+        # =================================================================
+        # When OAuth expires, we pause all operations until user re-authenticates
+        self._auth_paused = False
+        self._auth_pause_reason: Optional[str] = None
+        self._auth_question_id: Optional[str] = None
+        self._last_auth_check: Optional[datetime] = None
+
         # Components (initialized in start())
         self.memory: Optional[MemoryClient] = None
         self.worker_pool: Optional[WorkerPool] = None
@@ -377,6 +386,11 @@ class Orchestrator:
         )
 
         # =====================================================================
+        # INITIAL AUTH CHECK
+        # =====================================================================
+        await self._check_initial_auth()
+
+        # =====================================================================
         # SCAN FOR INCOMPLETE PROJECTS AND CREATE RESUMPTION TASKS
         # =====================================================================
         await self._scan_and_resume_projects()
@@ -391,6 +405,7 @@ class Orchestrator:
             asyncio.create_task(self._heartbeat_loop()),  # Completion guardian
             asyncio.create_task(self._collaboration_loop()),  # Inter-worker communication
             asyncio.create_task(self._self_healing_loop()),  # Autonomous recovery
+            asyncio.create_task(self._auth_health_loop()),  # Auth health monitoring
         ]
 
         # Wait for shutdown
@@ -517,6 +532,21 @@ class Orchestrator:
 
         while self.running:
             try:
+                # =============================================================
+                # AUTH PAUSE CHECK - Don't process anything if auth expired
+                # =============================================================
+                if self._auth_paused:
+                    # Check if user has re-authenticated
+                    if await self._check_auth_restored():
+                        logger.info("Authentication restored - resuming operations")
+                        self._auth_paused = False
+                        self._auth_pause_reason = None
+                        self._auth_question_id = None
+                    else:
+                        # Still paused, just wait
+                        await asyncio.sleep(5)
+                        continue
+
                 # Get next objective to process
                 objective = await self.memory.get_next_objective()
 
@@ -824,8 +854,8 @@ class Orchestrator:
             worker = await self.memory.get_idle_worker(task.worker_role)
 
             if worker:
-                # Determine correct project path for this task
-                project_path = self._get_project_path_for_task(task)
+                # Determine correct project path for this task (use async for AI-first)
+                project_path = await self._get_project_path_for_task_async(task)
 
                 # =====================================================================
                 # USE VERIFICATOR TO SPECIFY EXPECTED ARTIFACTS (if not already set)
@@ -1016,12 +1046,26 @@ class Orchestrator:
         """Monitor worker health and task completion."""
         while self.running:
             try:
+                # Skip monitoring if auth is paused
+                if self._auth_paused:
+                    await asyncio.sleep(2)
+                    continue
+
                 # Check for completed tasks
                 results = await self.worker_pool.collect_results()
 
                 for worker_id, result in results.items():
                     task_id = result.get("task_id")
                     success = result.get("status") == "completed"
+
+                    # =============================================================
+                    # AUTH ERROR DETECTION - Check if this result indicates auth failure
+                    # =============================================================
+                    if self._is_auth_error(result):
+                        error_msg = result.get("result", "") or result.get("error", "OAuth token expired")
+                        await self._handle_auth_error(error_msg)
+                        # Don't process this result further, task will be retried after auth
+                        continue
 
                     if task_id:
                         # Get task details for validation BEFORE marking complete
@@ -1289,6 +1333,12 @@ class Orchestrator:
 
         while self.running:
             try:
+                # Skip heartbeat if auth is paused
+                if self._auth_paused:
+                    logger.debug("Heartbeat skipped - auth paused")
+                    await asyncio.sleep(30)
+                    continue
+
                 if self.heartbeat_agent:
                     await self.heartbeat_agent._heartbeat_cycle()
 
@@ -1321,6 +1371,11 @@ class Orchestrator:
 
         while self.running:
             try:
+                # Skip collaboration if auth is paused
+                if self._auth_paused:
+                    await asyncio.sleep(5)
+                    continue
+
                 if self.collaboration_manager:
                     await self.collaboration_manager.process_collaboration()
 
@@ -1350,6 +1405,11 @@ class Orchestrator:
 
         while self.running:
             try:
+                # Skip self-healing if auth is paused (except for essential cleanup)
+                if self._auth_paused:
+                    await asyncio.sleep(60)
+                    continue
+
                 # Run self-healing every 5 minutes
                 healing_actions = []
 
@@ -1616,7 +1676,8 @@ class Orchestrator:
         if not task.expected_artifacts:
             return True, []
 
-        project_path = self._get_project_path_for_task(task)
+        # Use async version for AI-first project detection
+        project_path = await self._get_project_path_for_task_async(task)
 
         # Try using the verificator client for intelligent verification
         if self.verificator_client:
@@ -1705,8 +1766,8 @@ class Orchestrator:
         Returns True if validation passed, False if failed.
         """
         try:
-            # Use the shared project path detection helper
-            project_path = self._get_project_path_for_task(task)
+            # Use async version for AI-first project path detection
+            project_path = await self._get_project_path_for_task_async(task)
 
             logger.info(f"[MANDATORY VALIDATION] Running on {project_path} for task {task.id}")
 
@@ -2524,6 +2585,245 @@ echo $! > {project / ".clopus" / "dev_server.pid"}
 
         except Exception as e:
             logger.warning(f"Error updating project state for task {task.id}: {e}")
+
+    # =========================================================================
+    # AUTHENTICATION ERROR HANDLING
+    # =========================================================================
+    # These methods detect OAuth token expiration and pause operations until
+    # the user manually re-authenticates in one of the worker containers.
+
+    async def _check_initial_auth(self) -> None:
+        """Check authentication status on startup."""
+        logger.info("Checking authentication status...")
+
+        if not self.worker_pool:
+            logger.warning("Worker pool not available, skipping auth check")
+            return
+
+        # Wait for verificator worker to be available
+        await asyncio.sleep(2)
+
+        if not self.worker_pool.is_verificator_available():
+            logger.warning("Verificator not available, skipping initial auth check")
+            return
+
+        try:
+            # Try a simple verification task to test auth
+            result = await self.worker_pool.dispatch_verification_task(
+                "SEMANTIC_CHECK",
+                {"title": "Auth check", "description": "Startup auth verification", "result": "", "files_created": []},
+                timeout_seconds=20
+            )
+
+            if result and self._is_auth_error(result):
+                error_msg = result.get("result", "") or result.get("error", "OAuth token expired")
+                logger.error(f"AUTHENTICATION ERROR on startup: {error_msg}")
+                await self._handle_auth_error(error_msg)
+            else:
+                logger.info("Authentication check PASSED - Claude Code workers are authenticated")
+                self._last_auth_check = datetime.now()
+
+        except Exception as e:
+            logger.warning(f"Auth check failed with exception: {e}")
+
+    async def _auth_health_loop(self) -> None:
+        """Periodically check auth health and detect expiration early."""
+        # Check every 5 minutes
+        check_interval = 300
+
+        while self.running:
+            try:
+                await asyncio.sleep(check_interval)
+
+                if self._auth_paused:
+                    # Already paused, check if restored
+                    if await self._check_auth_restored():
+                        logger.info("Auth restored during health check")
+                        self._auth_paused = False
+                        self._auth_pause_reason = None
+                        self._auth_question_id = None
+                    continue
+
+                # =====================================================================
+                # CHECK WORKER CREDENTIAL HEALTH (token expiration tracking)
+                # =====================================================================
+                if self.worker_pool:
+                    try:
+                        creds_health = await self.worker_pool.get_credentials_health()
+
+                        # Log summary
+                        if creds_health.get("min_hours_remaining") is not None:
+                            min_hours = creds_health["min_hours_remaining"]
+                            host_hours = creds_health.get("host_token_hours")
+
+                            if min_hours < 0:
+                                # Some workers have expired tokens
+                                expired = creds_health.get("expired_workers", [])
+                                logger.error(f"CREDENTIAL WARNING: Workers {expired} have EXPIRED tokens!")
+                                logger.info("Workers will auto-sync from host on next idle cycle")
+                            elif min_hours < 1:
+                                logger.warning(f"CREDENTIAL WARNING: Tokens expiring within 1 hour (min: {min_hours:.1f}h)")
+                                if host_hours and host_hours > min_hours:
+                                    logger.info(f"Host token has {host_hours:.1f}h remaining - workers will sync")
+                            elif min_hours < 2:
+                                expiring = creds_health.get("expiring_soon_workers", [])
+                                logger.info(f"Token health: Workers {expiring} expiring within 2h (min: {min_hours:.1f}h)")
+                            else:
+                                logger.debug(f"Token health: OK - minimum {min_hours:.1f}h remaining across all workers")
+
+                            # If host token is also expiring, warn user
+                            if host_hours is not None and host_hours < 2:
+                                logger.warning(f"HOST TOKEN expiring in {host_hours:.1f}h - run 'claude login' soon!")
+
+                    except Exception as e:
+                        logger.debug(f"Credential health check error: {e}")
+
+                # Proactive auth check via verificator
+                if self.worker_pool and self.worker_pool.is_verificator_available():
+                    try:
+                        result = await self.worker_pool.dispatch_verification_task(
+                            "SEMANTIC_CHECK",
+                            {"title": "Auth health check", "description": "Periodic auth verification", "result": "", "files_created": []},
+                            timeout_seconds=15
+                        )
+
+                        if result and self._is_auth_error(result):
+                            error_msg = result.get("result", "") or result.get("error", "OAuth token expired")
+                            logger.error(f"Auth health check detected expiration: {error_msg}")
+                            await self._handle_auth_error(error_msg)
+                        else:
+                            # Auth is healthy
+                            self._last_auth_check = datetime.now()
+                            logger.debug("Auth health check passed")
+
+                    except Exception as e:
+                        logger.debug(f"Auth health check error: {e}")
+
+                # Also check verificator client's auth error state
+                if self.verificator_client and self.verificator_client.has_auth_error():
+                    error = self.verificator_client.get_auth_error()
+                    if not self._auth_paused:
+                        await self._handle_auth_error(error or "Auth error from verificator")
+
+                # Check AI planner's auth error state
+                if self.ai_planner and self.ai_planner.has_auth_error():
+                    error = self.ai_planner.get_auth_error()
+                    if not self._auth_paused:
+                        await self._handle_auth_error(error or "Auth error from AI planner")
+
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Error in auth health loop: {e}")
+                await asyncio.sleep(30)
+
+    def _is_auth_error(self, result: dict) -> bool:
+        """Check if a task result indicates an authentication error."""
+        if not result:
+            return False
+
+        # Check result text for auth error patterns
+        result_text = str(result.get("result", ""))
+        error_text = str(result.get("error", ""))
+        combined = result_text + error_text
+
+        auth_patterns = [
+            "authentication_error",
+            "OAuth token has expired",
+            "token has expired",
+            "Please obtain a new token",
+            "refresh your existing token",
+            "not authenticated",
+            "authentication required",
+        ]
+
+        for pattern in auth_patterns:
+            if pattern.lower() in combined.lower():
+                return True
+
+        return False
+
+    async def _handle_auth_error(self, error_message: str) -> None:
+        """Handle an authentication error by pausing operations and alerting user."""
+        if self._auth_paused:
+            # Already paused, don't create duplicate questions
+            return
+
+        logger.error(f"AUTHENTICATION ERROR DETECTED: {error_message}")
+        logger.error("Pausing all operations until user re-authenticates")
+
+        self._auth_paused = True
+        self._auth_pause_reason = error_message
+        self._last_auth_check = datetime.now()
+
+        # Create a question file to alert the user
+        if self.user_interaction:
+            try:
+                question_id = await self.user_interaction.ask_clarification(
+                    question="AUTHENTICATION EXPIRED - Action Required",
+                    context=f"""
+CLOPUS has detected that the OAuth token for Claude Code has expired.
+
+Error: {error_message}
+
+**All operations are PAUSED until you re-authenticate.**
+
+To fix this:
+1. Open a terminal in any worker container:
+   docker exec -it clopus-worker-1 bash
+
+2. Run the Claude Code login command:
+   claude login
+
+3. Complete the OAuth flow in your browser
+
+4. Create an answer file to resume:
+   echo "authenticated" > /app/ipc/answers/auth-restored.txt
+
+Or simply wait - CLOPUS will automatically detect when auth is restored.
+""",
+                    options=["I have re-authenticated", "Skip this check (not recommended)"]
+                )
+                self._auth_question_id = question_id
+                logger.info(f"Created auth question: {question_id}")
+            except Exception as e:
+                logger.error(f"Failed to create auth question: {e}")
+
+    async def _check_auth_restored(self) -> bool:
+        """Check if authentication has been restored."""
+        # Method 1: Check for answer file
+        answers_dir = self.settings.interface_config.answers_dir
+        answer_file = Path(answers_dir) / "auth-restored.txt"
+        if answer_file.exists():
+            answer_file.unlink()
+            logger.info("Found auth-restored.txt - authentication confirmed")
+            return True
+
+        # Method 2: Periodically test auth by dispatching a simple verification task
+        if self._last_auth_check:
+            time_since_check = (datetime.now() - self._last_auth_check).total_seconds()
+            if time_since_check < 30:  # Don't check more than every 30 seconds
+                return False
+
+        self._last_auth_check = datetime.now()
+
+        # Try a lightweight verification task to test auth
+        if self.worker_pool and self.worker_pool.is_verificator_available():
+            try:
+                result = await self.worker_pool.dispatch_verification_task(
+                    "SEMANTIC_CHECK",
+                    {"title": "Auth test", "description": "Test", "result": "", "files_created": []},
+                    timeout_seconds=15
+                )
+                if result and not self._is_auth_error(result):
+                    logger.info("Auth test succeeded - authentication restored")
+                    return True
+                elif result and self._is_auth_error(result):
+                    logger.debug("Auth test failed - still waiting for re-authentication")
+            except Exception as e:
+                logger.debug(f"Auth test error: {e}")
+
+        return False
 
 
 async def main():

@@ -683,9 +683,10 @@ cmd_reset() {
 
     log_info "Resetting CLOPUS..."
 
-    # 1. Stop the orchestrator
-    log_info "Stopping orchestrator..."
-    dc stop orchestrator 2>/dev/null || true
+    # 1. STOP EVERYTHING FIRST - this ensures no workers are mid-task
+    log_info "Stopping all containers..."
+    dc stop 2>/dev/null || true
+    sleep 2
 
     # 2. Clear objective files
     log_info "Clearing objectives..."
@@ -697,7 +698,7 @@ cmd_reset() {
     rm -f "$SCRIPT_DIR/questions"/*.md 2>/dev/null || true
     rm -f "$SCRIPT_DIR/answers"/*.md 2>/dev/null || true
 
-    # 4. Clear IPC files for all workers
+    # 4. Clear IPC files for all workers (including status to reset worker state)
     log_info "Clearing IPC files..."
     for i in {1..11}; do
         rm -f "$SCRIPT_DIR/ipc/tasks/$i/pending.json" 2>/dev/null || true
@@ -705,39 +706,34 @@ cmd_reset() {
         rm -f "$SCRIPT_DIR/ipc/tasks/$i/result.collected" 2>/dev/null || true
         rm -f "$SCRIPT_DIR/ipc/tasks/$i/ack.json" 2>/dev/null || true
         rm -f "$SCRIPT_DIR/ipc/tasks/$i/cancel" 2>/dev/null || true
+        rm -f "$SCRIPT_DIR/ipc/tasks/$i/status.json" 2>/dev/null || true
+        rm -f "$SCRIPT_DIR/ipc/tasks/$i/session.json" 2>/dev/null || true
     done
 
-    # 5. Clear projects in /workspace via Docker
+    # 5. Clear projects in /workspace (using host path directly)
     log_info "Clearing projects..."
-    docker compose exec -T --user root worker-1 bash -c 'rm -rf /workspace/*' 2>/dev/null || true
+    local workspace_path="${HOME}/Dev/clopus-projects"
+    if [ -d "$workspace_path" ]; then
+        # Remove ALL directories including hidden .shared
+        find "$workspace_path" -mindepth 1 -maxdepth 1 -type d -exec rm -rf {} \; 2>/dev/null || true
+        log_info "Cleared workspace at $workspace_path"
+    fi
 
     # 6. Clear SQLite database
     log_info "Clearing database..."
     rm -f "$SCRIPT_DIR/data/sqlite/clopus.db" 2>/dev/null || true
-    # Also try via Docker if host file doesn't exist
-    docker compose exec -T --user root worker-1 bash -c 'rm -f /app/data/sqlite/clopus.db' 2>/dev/null || true
+    rm -f "$SCRIPT_DIR/memory/short_term.db" 2>/dev/null || true
 
     # 7. Optionally clear ChromaDB
     if ! $keep_chromadb; then
         log_info "Clearing ChromaDB..."
-        # Delete and recreate ChromaDB volume
-        docker compose stop chromadb 2>/dev/null || true
         docker volume rm clopus_chromadb_data 2>/dev/null || true
-        docker compose up -d chromadb 2>/dev/null || true
-        sleep 2
     fi
 
-    # 8. Restart workers to clear their state
-    log_info "Restarting workers..."
-    for i in {1..11}; do
-        dc restart "worker-$i" 2>/dev/null &
-    done
-    wait
-
-    # 9. Start orchestrator
-    log_info "Starting orchestrator..."
-    dc start orchestrator 2>/dev/null || true
-    sleep 3
+    # 8. Start everything fresh
+    log_info "Starting CLOPUS..."
+    dc up -d 2>/dev/null || true
+    sleep 5
 
     log_success "Reset complete! CLOPUS is ready for a fresh start."
     log_info "Submit a new objective with: ./clopus objective \"Your task here\""

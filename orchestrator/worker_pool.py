@@ -226,9 +226,10 @@ class WorkerPool:
 
     def is_reserved_role(self, role: str) -> bool:
         """Check if a role is reserved (not for regular task assignment)."""
+        # browser-headless and browser-chrome are now assignable for browser automation tasks
         reserved = getattr(
             self.config, 'reserved_roles',
-            ['heartbeat', 'verificator', 'browser-headless', 'browser-chrome', 'services']
+            ['heartbeat', 'verificator', 'services']
         )
         return role in reserved
 
@@ -536,13 +537,16 @@ Always return results as JSON:
         """Collect completed task results from workers using atomic file operations.
 
         Uses atomic rename to prevent race conditions when reading result files.
+        Always check for result files regardless of internal status tracking,
+        since workers update their status independently.
         """
         results = {}
 
         for worker_id, worker in self.workers.items():
-            if worker["status"] != "busy":
-                continue
-
+            # IMPORTANT: Always check for result files, not just "busy" workers
+            # Workers update their own status.json to "idle" after completing tasks,
+            # but our internal tracking may be out of sync. A result.json file
+            # indicates a task was completed and needs processing.
             result_file = worker["ipc_dir"] / "result.json"
             collected_file = worker["ipc_dir"] / "result.collected"
 
@@ -640,6 +644,7 @@ Always return results as JSON:
 
         worker = self.workers[worker_id]
         status_file = worker["ipc_dir"] / "status.json"
+        creds_status_file = worker["ipc_dir"] / "credentials_status.json"
 
         status = {
             "id": worker_id,
@@ -656,7 +661,79 @@ Always return results as JSON:
             except json.JSONDecodeError:
                 pass
 
+        # Include credential status if available
+        if creds_status_file.exists():
+            try:
+                creds_status = json.loads(creds_status_file.read_text())
+                status["credentials"] = creds_status
+            except json.JSONDecodeError:
+                pass
+
         return status
+
+    async def get_credentials_health(self) -> Dict[str, Any]:
+        """
+        Get credential health status for all workers.
+
+        Returns a summary including:
+        - Workers with expired tokens
+        - Workers with tokens expiring soon (< 2 hours)
+        - Overall health status
+        """
+        health = {
+            "healthy": True,
+            "expired_workers": [],
+            "expiring_soon_workers": [],
+            "worker_details": {},
+            "min_hours_remaining": float("inf"),
+            "host_token_hours": None
+        }
+
+        # Check host token (via IPC mount point reference)
+        host_creds_path = Path("/app/ipc/../.claude/.credentials.json")
+        if not host_creds_path.exists():
+            # Try alternative path
+            host_creds_path = Path.home() / ".claude" / ".credentials.json"
+
+        if host_creds_path.exists():
+            try:
+                import time
+                creds = json.loads(host_creds_path.read_text())
+                expires_at = creds.get("claudeAiOauth", {}).get("expiresAt", 0)
+                if expires_at > 0:
+                    hours_left = (expires_at / 1000 - time.time()) / 3600
+                    health["host_token_hours"] = round(hours_left, 2)
+            except:
+                pass
+
+        for worker_id, worker in self.workers.items():
+            creds_file = worker["ipc_dir"] / "credentials_status.json"
+            if creds_file.exists():
+                try:
+                    creds_status = json.loads(creds_file.read_text())
+                    hours = creds_status.get("token_expires_hours", -999)
+
+                    health["worker_details"][worker_id] = {
+                        "role": worker["role"],
+                        "hours_remaining": hours,
+                        "last_sync": creds_status.get("last_sync")
+                    }
+
+                    if hours < health["min_hours_remaining"]:
+                        health["min_hours_remaining"] = hours
+
+                    if hours < 0:
+                        health["expired_workers"].append(worker_id)
+                        health["healthy"] = False
+                    elif hours < 2:
+                        health["expiring_soon_workers"].append(worker_id)
+                except:
+                    pass
+
+        if health["min_hours_remaining"] == float("inf"):
+            health["min_hours_remaining"] = None
+
+        return health
 
     async def get_all_status(self) -> List[Dict]:
         """Get status of all workers."""
@@ -784,19 +861,53 @@ Always return results as JSON:
 
         worker = self.workers[worker_id]
 
+        # Helper to check actual worker status from IPC file
+        def is_worker_actually_idle() -> bool:
+            """Check file-based status, not just in-memory status."""
+            status_file = worker["ipc_dir"] / "status.json"
+            pending_file = worker["ipc_dir"] / "pending.json"
+
+            # If there's a pending task, worker is not idle
+            if pending_file.exists():
+                return False
+
+            # Check the worker's self-reported status
+            if status_file.exists():
+                try:
+                    file_status = json.loads(status_file.read_text())
+                    return file_status.get("status") == "idle"
+                except:
+                    pass
+
+            # Fallback to in-memory status
+            return worker["status"] == "idle"
+
         # Wait for worker to become available (with timeout)
+        # Check BOTH in-memory and file-based status to avoid race conditions
+        # For AI planning tasks (long timeout), wait up to half the timeout for availability
         wait_start = datetime.now()
-        while worker["status"] != "idle":
+        wait_timeout = min(timeout_seconds // 2, 180)  # Up to 3 minutes wait for availability
+
+        logger.debug(f"Waiting up to {wait_timeout}s for verificator to become idle...")
+
+        while not is_worker_actually_idle():
             await asyncio.sleep(0.5)
-            if (datetime.now() - wait_start).total_seconds() > timeout_seconds:
-                logger.warning(f"Verificator worker not available within {timeout_seconds}s timeout")
+            elapsed = (datetime.now() - wait_start).total_seconds()
+            if elapsed > wait_timeout:
+                logger.warning(f"Verificator worker not available within {wait_timeout}s timeout")
                 return {
                     "error": "worker_busy",
                     "task_type": task_type,
                     "timeout_seconds": timeout_seconds,
                     "retryable": True,
-                    "message": f"Verificator worker was busy for {timeout_seconds} seconds"
+                    "message": f"Verificator worker was busy for {wait_timeout} seconds"
                 }
+            # Log progress every 30s
+            if int(elapsed) % 30 == 0 and int(elapsed) > 0:
+                logger.info(f"Still waiting for verificator... ({int(elapsed)}s elapsed)")
+
+        # Sync in-memory status with file status
+        worker["status"] = "idle"
 
         # Build verification prompt
         prompt = self._build_verification_prompt(task_type, task_data)

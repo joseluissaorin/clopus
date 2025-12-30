@@ -293,8 +293,8 @@ class TaskPlanner:
                 for s in relevant_skills[:5]
             ]
 
-        # Add testing tasks
-        test_tasks = self._plan_testing_tasks(base_tasks, complexity)
+        # Add testing tasks (includes E2E for all web projects)
+        test_tasks = self._plan_testing_tasks(base_tasks, complexity, project_type, technologies)
         base_tasks.extend(test_tasks)
 
         # Add review task
@@ -308,8 +308,8 @@ class TaskPlanner:
             validation_required=True
         ))
 
-        # Set proper dependencies
-        tasks_with_deps = self._resolve_dependencies(base_tasks)
+        # Set proper dependencies (use async for AI-first)
+        tasks_with_deps = await self._resolve_dependencies_async(base_tasks)
 
         # Convert to dictionaries
         return [self._task_to_dict(t) for t in tasks_with_deps]
@@ -328,7 +328,7 @@ class TaskPlanner:
             "metadata": task.metadata
         }
 
-    def _resolve_dependencies(self, tasks: List[PlannedTask]) -> List[PlannedTask]:
+    async def _resolve_dependencies_async(self, tasks: List[PlannedTask]) -> List[PlannedTask]:
         """
         Ensure dependencies are properly ordered.
 
@@ -343,33 +343,40 @@ class TaskPlanner:
         # Try AI-First Engine for semantic dependency analysis
         if self.ai_engine:
             try:
-                loop = asyncio.get_event_loop()
-                if loop.is_running():
-                    # We're in an async context, fall back to explicit
-                    pass
-                else:
-                    task_data = [
-                        {"id": t.id, "title": t.title, "description": t.description[:200]}
-                        for t in tasks
-                    ]
-                    result = loop.run_until_complete(
-                        self.ai_engine.analyze_task_dependencies(task_data)
-                    )
-                    if result.success and result.result:
-                        dependency_graph = result.result.get("dependency_graph", {})
-                        if dependency_graph:
-                            # Update task dependencies from AI analysis
-                            for task in tasks:
-                                ai_deps = dependency_graph.get(task.id, [])
-                                if ai_deps:
-                                    # Merge AI-detected deps with explicit deps
-                                    task.dependencies = list(set(task.dependencies + ai_deps))
-                            logger.debug(f"AI-first analyzed dependencies for {len(tasks)} tasks")
+                task_data = [
+                    {"id": t.id, "title": t.title, "description": t.description[:200]}
+                    for t in tasks
+                ]
+                result = await self.ai_engine.analyze_task_dependencies(task_data)
+                if result.success and result.result:
+                    dependency_graph = result.result.get("dependency_graph", {})
+                    if dependency_graph:
+                        # Update task dependencies from AI analysis
+                        for task in tasks:
+                            ai_deps = dependency_graph.get(task.id, [])
+                            if ai_deps:
+                                # Merge AI-detected deps with explicit deps
+                                task.dependencies = list(set(task.dependencies + ai_deps))
+                        logger.debug(f"AI-first analyzed dependencies for {len(tasks)} tasks")
             except Exception as e:
                 logger.debug(f"AI-first dependency analysis failed: {e}")
 
         # Continue with explicit dependency resolution
         return self._explicit_resolve_dependencies(tasks)
+
+    def _resolve_dependencies(self, tasks: List[PlannedTask]) -> List[PlannedTask]:
+        """Sync wrapper for backward compatibility."""
+        import asyncio
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                # In async context, skip AI and use explicit resolution
+                return self._explicit_resolve_dependencies(tasks)
+            return loop.run_until_complete(
+                self._resolve_dependencies_async(tasks)
+            )
+        except RuntimeError:
+            return self._explicit_resolve_dependencies(tasks)
 
     def _explicit_resolve_dependencies(self, tasks: List[PlannedTask]) -> List[PlannedTask]:
         """DEPRECATED: Explicit dependency resolution. Use AI-first instead."""
@@ -1118,17 +1125,56 @@ EVERY endpoint that creates, reads, updates, or deletes data MUST:
 
         return tasks
 
+    # Web-related project types that should ALWAYS have E2E tests
+    WEB_PROJECT_TYPES = {
+        "react", "nextjs", "vue", "angular", "svelte", "solid",
+        "web", "frontend", "dashboard", "spa", "pwa",
+        "todo", "app", "webapp", "website", "landing",
+        "admin", "portal", "ui", "interface"
+    }
+
+    # Web-related technologies that indicate E2E tests are needed
+    WEB_TECHNOLOGIES = {
+        "react", "vue", "angular", "svelte", "solid", "next", "nuxt",
+        "vite", "webpack", "parcel", "rollup",
+        "tailwind", "css", "sass", "scss", "styled-components",
+        "html", "dom", "browser", "web"
+    }
+
+    def _is_web_project(self, project_type: str, technologies: List[str]) -> bool:
+        """Determine if this is a web project that needs E2E tests."""
+        # Check project type
+        project_type_lower = project_type.lower() if project_type else ""
+        for web_type in self.WEB_PROJECT_TYPES:
+            if web_type in project_type_lower:
+                return True
+
+        # Check technologies
+        techs_lower = [t.lower() for t in (technologies or [])]
+        for tech in techs_lower:
+            for web_tech in self.WEB_TECHNOLOGIES:
+                if web_tech in tech:
+                    return True
+
+        return False
+
     def _plan_testing_tasks(
         self,
         implementation_tasks: List[PlannedTask],
-        complexity: str
+        complexity: str,
+        project_type: str = "",
+        technologies: List[str] = None
     ) -> List[PlannedTask]:
-        """Create testing tasks."""
+        """Create testing tasks. ALL web projects get E2E tests with Playwright."""
         tasks = []
+        technologies = technologies or []
 
         coder_task_ids = [t.id for t in implementation_tasks if t.worker_role == "coder"]
 
-        # Unit tests
+        # Check if this is a web project
+        is_web = self._is_web_project(project_type, technologies)
+
+        # Unit tests (always)
         tasks.append(PlannedTask(
             id=str(uuid.uuid4()),
             title="Write unit tests",
@@ -1151,17 +1197,96 @@ EVERY endpoint that creates, reads, updates, or deletes data MUST:
                 estimated_duration="medium"
             ))
 
-        # E2E tests for high+ complexity
-        if complexity in ("high", "very_high"):
+        # =================================================================
+        # E2E TESTS WITH PLAYWRIGHT - FOR ALL WEB PROJECTS
+        # =================================================================
+        # Any project that looks like web (React, Vue, dashboard, app, etc.)
+        # gets full Playwright E2E testing regardless of complexity
+        if is_web:
+            # First, setup Playwright configuration
+            playwright_setup_id = str(uuid.uuid4())
+            tasks.append(PlannedTask(
+                id=playwright_setup_id,
+                title="Setup Playwright for E2E testing",
+                description="""Setup Playwright E2E testing infrastructure:
+1. Install @playwright/test as dev dependency: npm install -D @playwright/test
+2. Create playwright.config.ts with proper configuration:
+   - Set baseURL to the dev server URL
+   - Configure browser(s) to test (chromium at minimum)
+   - Set up screenshot on failure
+   - Configure test directory
+3. Create tests/ or e2e/ directory structure
+4. Add scripts to package.json:
+   - "test:e2e": "playwright test"
+   - "test:e2e:ui": "playwright test --ui"
+5. Run: npx playwright install chromium
+
+CRITICAL: The playwright.config.ts file MUST be created at the project root.
+This is REQUIRED for the validation pipeline to run E2E tests.""",
+                worker_role="tester",
+                priority=4,  # Higher priority - do this early
+                dependencies=coder_task_ids[:1],  # Only depends on first setup task
+                estimated_duration="short"
+            ))
+
+            # Then write comprehensive E2E tests
             tasks.append(PlannedTask(
                 id=str(uuid.uuid4()),
-                title="Write E2E tests",
-                description="Create end-to-end tests with Playwright",
+                title="Write E2E tests with Playwright",
+                description="""Create comprehensive end-to-end tests using Playwright:
+
+1. TEST ALL USER FLOWS:
+   - Main functionality (CRUD operations if applicable)
+   - Navigation between pages/views
+   - Form submissions and validations
+   - Error states and edge cases
+
+2. VISUAL TESTING:
+   - Take screenshots at key states
+   - Test responsive design (mobile, tablet, desktop)
+   - Test dark mode if applicable
+
+3. INTERACTION TESTING:
+   - Button clicks and form inputs
+   - Keyboard navigation
+   - Hover states and tooltips
+
+4. RUN AND VERIFY:
+   - Run: npx playwright test
+   - All tests must pass
+   - Screenshots saved in test-results/
+
+Tests should be in tests/ or e2e/ directory with .spec.ts extension.""",
                 worker_role="tester",
                 priority=3,
-                dependencies=coder_task_ids,
-                estimated_duration="long"
+                dependencies=[playwright_setup_id],
+                estimated_duration="medium"
             ))
+
+            # Browser-based visual verification task
+            tasks.append(PlannedTask(
+                id=str(uuid.uuid4()),
+                title="Run browser verification and take screenshots",
+                description="""Use Playwright to visually verify the application:
+
+1. Start the dev server
+2. Open the application in a browser
+3. Take screenshots of:
+   - Main page/dashboard
+   - All major features
+   - Mobile responsive view
+   - Any error states
+4. Save screenshots to /output/screenshots/
+5. Verify all interactive elements work correctly
+
+This task uses the browser worker for visual verification.""",
+                worker_role="tester",  # Can also be browser-headless role
+                priority=2,
+                dependencies=[t.id for t in tasks if "E2E" in t.title],
+                estimated_duration="short"
+            ))
+
+            logger.info(f"Added Playwright E2E testing tasks for web project: {project_type}")
 
         return tasks
 

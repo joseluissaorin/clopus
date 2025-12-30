@@ -16,6 +16,9 @@ from typing import Any, Dict, List, Optional
 from pathlib import Path
 from dataclasses import dataclass, field
 
+# Import auth error detection from verificator_client
+from .verificator_client import is_auth_error
+
 logger = logging.getLogger("clopus.architectural_verifier")
 
 
@@ -49,6 +52,19 @@ class ArchitecturalVerifier:
             worker_pool: The WorkerPool instance to dispatch analysis tasks
         """
         self.worker_pool = worker_pool
+        self._last_auth_error: Optional[str] = None
+
+    def has_auth_error(self) -> bool:
+        """Check if there's a pending auth error."""
+        return self._last_auth_error is not None
+
+    def get_auth_error(self) -> Optional[str]:
+        """Get the last auth error message."""
+        return self._last_auth_error
+
+    def clear_auth_error(self) -> None:
+        """Clear auth error state."""
+        self._last_auth_error = None
 
     async def verify_project(self, project_path: str) -> List[ArchitecturalGap]:
         """
@@ -63,7 +79,8 @@ class ArchitecturalVerifier:
             project_path: Path to the project to verify
 
         Returns:
-            List of architectural gaps found
+            List of architectural gaps found.
+            NOTE: Returns a special gap with category="AUTH_ERROR" if auth failed.
         """
         logger.info(f"Starting architectural verification for: {project_path}")
 
@@ -76,8 +93,24 @@ class ArchitecturalVerifier:
             }
         )
 
+        # Check for auth errors FIRST
+        if result and is_auth_error(result):
+            error_msg = result.get("message", "") or result.get("error", "OAuth token expired")
+            self._last_auth_error = str(error_msg)
+            logger.error(f"AUTHENTICATION ERROR in architectural verification: {error_msg}")
+            # Return a special gap to indicate verification couldn't be performed
+            return [ArchitecturalGap(
+                requirement="Architectural verification",
+                actual_state="VERIFICATION FAILED: Authentication expired - please re-login to Claude Code",
+                severity="critical",
+                category="AUTH_ERROR",
+                files_affected=[],
+                remediation_steps=["Re-authenticate Claude Code workers: docker exec -it clopus-worker-1 claude login"]
+            )]
+
         if result and "error" in result:
             logger.warning(f"Architectural analysis error: {result.get('message', result['error'])}")
+            # Return empty but log the real error
             return []
 
         if result and "gaps" in result:

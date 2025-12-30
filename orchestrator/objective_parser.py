@@ -231,6 +231,7 @@ class ObjectiveParser:
         DEPRECATED: Pattern-based parsing.
 
         Only used as fallback when AI is unavailable.
+        NOTE: Still uses AI-First Engine for tech/feature detection when available.
         """
         # Quick pattern matching for common cases
         quick_result = self._quick_parse(objective_text)
@@ -238,13 +239,17 @@ class ObjectiveParser:
         # Get relevant context from memory
         context = await self.memory.get_relevant_context(objective_text)
 
+        # Use async versions to leverage AI-First Engine when available
+        technologies = await self._detect_technologies_async(objective_text, quick_result)
+        features = await self._extract_features_async(objective_text)
+
         # Build parsed result
         parsed = ParsedObjective(
             original=objective_text,
             summary=self._extract_summary(objective_text),
             project_type=quick_result.get("type", "custom"),
-            technologies=self._detect_technologies(objective_text, quick_result),
-            features=self._extract_features(objective_text),
+            technologies=technologies,
+            features=features,
             constraints=self._extract_constraints(objective_text),
             success_criteria=self._extract_success_criteria(objective_text),
             unclear_points=self._find_unclear_points(objective_text),
@@ -580,6 +585,10 @@ class ObjectiveParser:
         if parsed.projects is not None:
             result["projects"] = parsed.projects
             result["is_multi_project"] = len(parsed.projects) > 1
+            # Extract project_name from first project for backward compatibility
+            # This ensures main.py gets the AI-generated project name
+            if parsed.projects and parsed.projects[0].get("name"):
+                result["project_name"] = parsed.projects[0]["name"]
 
         if parsed.ai_analysis is not None:
             result["ai_analysis"] = parsed.ai_analysis

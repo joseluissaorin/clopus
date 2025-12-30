@@ -2,7 +2,7 @@
 
 > Category: task-failures
 > Severity: medium
-> Created: 2025-12-28T16:34:12.322020
+> Created: 2025-12-29T02:26:07.286857
 > Source: Run validation: e2e_tests
 
 ## What Happened
@@ -14,7 +14,7 @@ Task:
 
 The validation stage 'e2e_tests' has not passed for this project.
 
-Project Path: /workspace/todo-app
+Project Path: /workspace/react-counter-app
 
 Please ensure this validation stage passes:
 - e2e_tests

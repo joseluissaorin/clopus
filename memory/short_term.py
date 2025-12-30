@@ -343,6 +343,37 @@ class ShortTermMemory:
             )
             await conn.commit()
 
+    async def update_objective_metadata(self, objective_id: str, new_metadata: Dict) -> None:
+        """
+        Update objective metadata, merging with existing metadata.
+
+        This is used to link projects to objectives, enabling the heartbeat
+        agent to find the correct project for each objective.
+        """
+        async with self._lock:
+            conn = await self._get_connection()
+
+            # Get existing metadata
+            async with conn.execute(
+                "SELECT metadata FROM objectives WHERE id = ?",
+                (objective_id,)
+            ) as cursor:
+                row = await cursor.fetchone()
+                if not row:
+                    return
+
+                existing = json.loads(row["metadata"]) if row["metadata"] else {}
+
+            # Merge new metadata into existing
+            existing.update(new_metadata)
+
+            # Update in database
+            await conn.execute(
+                "UPDATE objectives SET metadata = ? WHERE id = ?",
+                (json.dumps(existing), objective_id)
+            )
+            await conn.commit()
+
     def _row_to_objective(self, row) -> Objective:
         return Objective(
             id=row["id"],

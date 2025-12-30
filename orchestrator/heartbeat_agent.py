@@ -377,6 +377,27 @@ class HeartbeatAgent:
                 logger.info("No architectural gaps detected")
                 return
 
+            # =================================================================
+            # CHECK FOR AUTH ERRORS
+            # =================================================================
+            # If we get an AUTH_ERROR gap, it means verification couldn't run
+            auth_error_gaps = [g for g in gaps if g.category == "AUTH_ERROR"]
+            if auth_error_gaps:
+                logger.error("AUTHENTICATION ERROR - Architectural verification could NOT be performed")
+                logger.error("Please re-authenticate Claude Code workers before continuing")
+                # Log as auth error, not as regular gap detection
+                await self.memory.log_activity(
+                    source="heartbeat",
+                    action="auth_error_detected",
+                    details={
+                        "objective_id": objective.id,
+                        "project_path": project_path,
+                        "error": auth_error_gaps[0].actual_state
+                    }
+                )
+                # Don't process as regular gaps - return to prevent false "no gaps" later
+                return
+
             logger.warning(f"Found {len(gaps)} architectural gaps")
 
             # Log the gaps

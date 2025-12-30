@@ -3,31 +3,31 @@
   "model": "opus",
   "permissions": {
     "allow": [
-      "Bash(git:*)",
-      "Bash(ls:*)",
-      "Bash(cat:*)",
-      "Bash(mkdir:*)",
+      "Bash(*)",
       "Read(**/*)",
       "Edit(**/*.md)",
       "Edit(**/*.json)",
       "Edit(**/*.css)",
       "Edit(**/*.scss)",
+      "Edit(**/*.svg)",
       "Write(**/*.md)",
       "Write(**/*.json)",
+      "Write(**/*.css)",
+      "Write(**/*.svg)",
       "Glob(**/*)",
       "Grep(**/*)"
     ],
     "deny": [
-      "Bash(rm -rf:*)",
+      "Bash(rm -rf /)",
+      "Bash(rm -rf /*)",
       "Bash(sudo:*)",
-      "Edit(**/*.ts)",
-      "Edit(**/*.tsx)",
-      "Edit(**/*.js)",
-      "Edit(**/*.py)"
+      "Bash(shutdown:*)",
+      "Bash(reboot:*)"
     ],
     "additionalDirectories": [
       "/workspace",
-      "/app/ipc"
+      "/app/ipc",
+      "/tmp"
     ],
     "defaultMode": "acceptEdits"
   },

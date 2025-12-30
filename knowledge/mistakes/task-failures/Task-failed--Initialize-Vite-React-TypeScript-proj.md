@@ -2,7 +2,7 @@
 
 > Category: task-failures
 > Severity: medium
-> Created: 2025-12-28T20:42:27.102913
+> Created: 2025-12-29T23:46:06.001507
 > Source: Initialize Vite React TypeScript project
 
 ## What Happened
@@ -11,21 +11,22 @@ Error: Unknown error
 
 Task: Create a new Vite project with React and TypeScript template:
 - Run `npm create vite@latest . -- --template react-ts`
-- Configure vite.config.ts to use port 3400
-- Update package.json with project name 'react-button-app'
-- Install dependencies with npm install
+- Install dependencies with `npm install`
+- Verify the dev server starts correctly
+- Clean up default Vite boilerplate (remove default App.tsx content, App.css defaults)
 
-Project Path: /workspace/react-button-app
+Project Path: /workspace/todo-app
 
 ## Expected Artifacts:
 - package.json
 - vite.config.ts
 - tsconfig.json
+- src/main.tsx
+- src/App.tsx
 - index.html
 
 ## Validation Criteria:
-- package.json exists with React and Vite dependencies
-- vite.config.ts configures por
+- npm install completes without errors
 
 ## How to Avoid
 

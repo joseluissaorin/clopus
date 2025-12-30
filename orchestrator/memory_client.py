@@ -436,14 +436,20 @@ class MemoryClient:
         return await self.short_term.register_worker(worker_id, role)
 
     async def get_idle_worker(self, preferred_role: Optional[str] = None) -> Optional[Worker]:
-        """Get an idle worker, preferring specified role."""
-        # First try preferred role
+        """Get an idle worker for the specified role.
+
+        IMPORTANT: Only returns workers with the exact matching role.
+        Does NOT fall back to any idle worker, as this would assign
+        tasks to the wrong worker type (e.g., coder tasks to testers).
+        """
         if preferred_role:
             workers = await self.short_term.get_idle_workers(preferred_role)
             if workers:
                 return workers[0]
+            # No worker with the right role available - wait for one
+            return None
 
-        # Fall back to any idle worker
+        # If no role specified, get any non-reserved idle worker
         workers = await self.short_term.get_idle_workers()
         return workers[0] if workers else None
 

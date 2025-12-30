@@ -3,27 +3,7 @@
   "model": "opus",
   "permissions": {
     "allow": [
-      "Bash(git:*)",
-      "Bash(npm:*)",
-      "Bash(npx:*)",
-      "Bash(python:*)",
-      "Bash(pytest:*)",
-      "Bash(pip:*)",
-      "Bash(docker:*)",
-      "Bash(curl:*)",
-      "Bash(ls:*)",
-      "Bash(cat:*)",
-      "Bash(mkdir:*)",
-      "Bash(cp:*)",
-      "Bash(mv:*)",
-      "Bash(head:*)",
-      "Bash(tail:*)",
-      "Bash(grep:*)",
-      "Bash(find:*)",
-      "Bash(wc:*)",
-      "Bash(echo:*)",
-      "Bash(touch:*)",
-      "Bash(chmod:*)",
+      "Bash(*)",
       "Read(**/*)",
       "Edit(**/*)",
       "Write(**/*)",
@@ -31,19 +11,21 @@
       "Grep(**/*)"
     ],
     "deny": [
-      "Bash(rm -rf:*)",
+      "Bash(rm -rf /)",
+      "Bash(rm -rf /*)",
+      "Bash(sudo rm -rf:*)",
       "Bash(sudo:*)",
       "Bash(shutdown:*)",
       "Bash(reboot:*)",
-      "Read(.env.production)",
-      "Read(**/.git/config)",
-      "Edit(package-lock.json)",
-      "Edit(yarn.lock)"
+      "Bash(mkfs:*)",
+      "Bash(dd if=/dev/zero:*)",
+      "Read(.env.production)"
     ],
     "additionalDirectories": [
       "/workspace",
       "/app/ipc",
-      "/app/claude-config"
+      "/app/claude-config",
+      "/tmp"
     ],
     "defaultMode": "acceptEdits"
   },

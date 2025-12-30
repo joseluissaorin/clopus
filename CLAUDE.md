@@ -263,23 +263,57 @@ All workers use **Claude Opus 4.5** for maximum capability. Each role has tailor
 
 | Role | Model | Permissions |
 |------|-------|-------------|
-| **Coder** | Opus | Full file access, all build tools |
-| **Tester** | Opus | Test files only, Playwright access |
-| **Reviewer** | Opus | Read-only mode for safety |
-| **Designer** | Opus | Design files (md, json, css) only |
-| **Researcher** | Opus | Read-only, web search |
-| **Debugger** | Opus | Full access for debugging |
-| **Verificator** | Opus | Verification and analysis tasks |
+| **Coder** | Opus | Full Bash access (blocklist), full file access |
+| **Tester** | Opus | Full Bash access (blocklist), full file access |
+| **Reviewer** | Opus | Full Bash access (blocklist), read-only files |
+| **Designer** | Opus | Full Bash access (blocklist), design files only |
+| **Researcher** | Opus | Full Bash access (blocklist), read-only files |
+| **Debugger** | Opus | Full Bash access (blocklist), full file access |
+| **Verificator** | Opus | Full Bash access (blocklist), verification tasks |
+| **Browser-Headless** | Opus | Full Bash access (blocklist), Playwright |
+| **Browser-Chrome** | Opus | Full Bash access (blocklist), Chrome + VNC |
+
+### Permission System (v3.3 - Blocklist Approach)
+
+**Changed from allowlist to blocklist** - workers can run any Bash command except dangerous ones:
+
+```json
+{
+  "permissions": {
+    "allow": [
+      "Bash(*)",           // All Bash commands allowed
+      "Read(**/*)",
+      "Edit(**/*)",
+      "Write(**/*)",
+      "Glob(**/*)",
+      "Grep(**/*)"
+    ],
+    "deny": [
+      "Bash(rm -rf /)",     // Block dangerous commands
+      "Bash(rm -rf /*)",
+      "Bash(sudo:*)",
+      "Bash(shutdown:*)",
+      "Bash(reboot:*)",
+      "Bash(mkfs:*)",
+      "Bash(dd if=/dev/zero:*)"
+    ]
+  }
+}
+```
+
+**Why blocklist?** The previous allowlist approach caused tasks to hang when workers needed commands not in the list (e.g., `pnpm`). Docker container isolation provides the security boundary; blocking only destructive commands is sufficient.
 
 ### Files Structure
 
 ```
 .claude/
-├── settings.json           # Base configuration
-├── settings.coder.json     # Coder overrides
-├── settings.reviewer.json  # Reviewer (read-only, opus)
-├── settings.designer.json  # Designer (design files only)
-├── settings.tester.json    # Tester (test files only)
+├── settings.json               # Base configuration (blocklist)
+├── settings.coder.json         # Coder (full access)
+├── settings.tester.json        # Tester (full access)
+├── settings.reviewer.json      # Reviewer (read-only files)
+├── settings.designer.json      # Designer (design files only)
+├── settings.browser-chrome.json    # Browser-Chrome (v3.3)
+├── settings.browser-headless.json  # Browser-Headless (v3.3)
 ├── hooks/
 │   ├── validate_command.py # PreToolUse: block dangerous commands
 │   └── log_operation.py    # PostToolUse: log to IPC
@@ -539,9 +573,9 @@ The Verificator is a **reserved worker** - it is never assigned regular tasks by
 
 ---
 
-## BROWSER WORKERS (Workers 9-10)
+## BROWSER WORKERS (Workers 9-10) - NOW ASSIGNABLE (v3.3)
 
-CLOPUS now includes dedicated browser automation workers for web tasks.
+CLOPUS includes dedicated browser automation workers for web tasks. **As of v3.3, browser workers are now assignable** - the AI planner can assign browser automation tasks directly to these workers.
 
 ### Worker 9: Browser-Headless (Playwright)
 
@@ -549,7 +583,7 @@ A headless Playwright-based worker for fast, automated browser tasks:
 - Web scraping and data extraction
 - Form filling and submission
 - Screenshot capture
-- Automated testing
+- Automated E2E testing
 - No visual interface needed
 
 **Docker Configuration:**
@@ -564,7 +598,7 @@ worker-9:
 ### Worker 10: Browser-Chrome (VNC)
 
 Chrome browser with VNC access for visual browser control:
-- Claude in Chrome extension support
+- **Chrome auto-starts** on container boot (v3.3)
 - Visual debugging via VNC
 - Manual intervention when needed
 - Screenshot and recording capabilities
@@ -572,6 +606,16 @@ Chrome browser with VNC access for visual browser control:
 **Access:**
 - noVNC: http://localhost:6280
 - VNC: localhost:5920
+
+**Chrome Auto-Start (v3.3):**
+```bash
+# Chrome launches automatically with these flags:
+google-chrome --no-sandbox --disable-gpu --start-maximized \
+    --disable-dev-shm-usage --no-first-run --disable-sync "about:blank"
+
+# Stale profile locks are cleaned up on startup:
+rm -f /home/ubuntu/.config/google-chrome/Singleton* 2>/dev/null || true
+```
 
 **Docker Configuration:**
 ```yaml
@@ -592,10 +636,22 @@ worker-10:
 | Capability | Worker 9 | Worker 10 |
 |------------|----------|-----------|
 | Headless operation | Yes | No |
-| VNC access | No | Yes |
+| VNC access | No | Yes (localhost:6280) |
 | Playwright MCP | Yes | Yes |
 | Visual debugging | No | Yes |
+| Chrome auto-start | N/A | Yes (v3.3) |
+| Task assignable | Yes (v3.3) | Yes (v3.3) |
 | Speed | Fast | Moderate |
+
+### AI Planner Worker Role Selection (v3.3)
+
+The AI planner now knows when to use browser workers:
+
+```
+## WORKER ROLE SELECTION:
+- **browser-headless**: Headless browser tasks - fast automated testing, screenshots, Playwright automation
+- **browser-chrome**: Full Chrome browser with VNC - visual debugging, complex interactions, seeing the browser
+```
 
 ---
 
@@ -1217,6 +1273,32 @@ Verificator timeouts now return error info for retry handling:
 # After: return {"error": "timeout", "retryable": True, "message": "..."}
 ```
 
+### Task Timeout Protection (v3.3)
+
+**File:** `workers/worker-entrypoint.sh`
+
+Tasks now have a 30-minute default timeout to prevent indefinite hangs:
+```bash
+# Execute with timeout (default: 30 minutes)
+TASK_TIMEOUT=${TASK_TIMEOUT:-1800}
+RAW_OUTPUT=$(timeout $TASK_TIMEOUT claude "${CLAUDE_ARGS[@]}" "$FULL_PROMPT" 2>&1) || true
+CLAUDE_EXIT_CODE=$?
+
+# Detect timeout (exit code 124)
+if [ $CLAUDE_EXIT_CODE -eq 124 ]; then
+    echo "[Worker $WORKER_ID] WARNING: Task timed out after ${TASK_TIMEOUT}s"
+    RAW_OUTPUT='{"error": "timeout", "message": "Task execution timed out"}'
+fi
+```
+
+Additionally, missing session ID warnings help debug stuck tasks:
+```bash
+if [ -z "$SESSION_ID" ]; then
+    echo "[Worker $WORKER_ID] WARNING: No session ID returned for task $TASK_ID"
+    echo "[Worker $WORKER_ID] Raw output (first 500 chars): $(echo "$RAW_OUTPUT" | head -c 500)"
+fi
+```
+
 ---
 
 ## AI-FIRST VALIDATION (NEW in v3.3)
@@ -1323,6 +1405,26 @@ Additionally, removed naive keyword matching throughout the codebase:
 - `validation/stages/unit_tests.py`: Parses JSON from test reporters
 - `validation/stages/security.py`: Context-aware scanning with skip lists
 - `orchestrator/heartbeat_agent.py`: Verificator AI is now primary for project matching and duplicate detection (keyword matching demoted to fallback)
+
+**2025-12-30**: Browser verification task stuck for 3+ hours. Root cause investigation revealed multiple issues:
+1. **Permission allowlist too restrictive** (`.claude/settings.*.json`): Tester worker couldn't run `pnpm` because only `npm`, `npx` were in the allowlist. Tasks would hang waiting for permission that never came.
+2. **No task timeout mechanism** (`workers/worker-entrypoint.sh`): Tasks could run indefinitely with no way to detect or recover from hangs.
+3. **Browser workers never used** (`orchestrator/worker_pool.py`, `orchestrator/ai_planner.py`): `browser-headless` and `browser-chrome` were marked as "reserved" roles, so no tasks were ever assigned to them. AI planner didn't know these roles existed.
+
+**Solution implemented (v3.3):**
+1. **Permission blocklist approach**: Changed from allowlist to blocklist - all Bash commands allowed except dangerous ones (`rm -rf /`, `sudo`, `shutdown`, `reboot`, `mkfs`, `dd if=/dev/zero`).
+2. **30-minute task timeout**: Added `timeout $TASK_TIMEOUT claude ...` wrapper with exit code 124 detection for timeouts.
+3. **Browser workers now assignable**: Removed `browser-headless` and `browser-chrome` from reserved roles. Updated AI planner to include them as valid worker roles with usage guidance.
+4. **Chrome auto-start**: Worker-10 now auto-starts Chrome on boot with stale profile lock cleanup.
+5. **New settings files**: Created `settings.browser-chrome.json` and `settings.browser-headless.json` with blocklist permissions.
+
+Files changed:
+- `.claude/settings.json`, `.claude/settings.coder.json`, `.claude/settings.tester.json`, `.claude/settings.designer.json`, `.claude/settings.reviewer.json` - blocklist permissions
+- `.claude/settings.browser-chrome.json`, `.claude/settings.browser-headless.json` - new files
+- `workers/worker-entrypoint.sh` - timeout mechanism + session logging
+- `workers/browser-chrome-entrypoint.sh` - Chrome auto-start + lock cleanup
+- `orchestrator/ai_planner.py` - browser-headless/chrome as valid roles + worker selection guidance
+- `orchestrator/worker_pool.py` - browser workers no longer reserved
 
 ---
 

@@ -18,6 +18,9 @@ from typing import Any, Dict, List, Optional, Tuple
 from dataclasses import dataclass, field
 import logging
 
+# Import auth error detection
+from .verificator_client import is_auth_error
+
 logger = logging.getLogger("clopus.ai_planner")
 
 
@@ -126,7 +129,7 @@ Architecture: {architecture}
 
 ## AVAILABLE WORKER ROLES:
 - **coder**: Implements features, writes code, creates files
-- **tester**: Writes and runs tests (unit, integration, e2e)
+- **tester**: Writes and runs tests (unit, integration, e2e with Playwright)
 - **reviewer**: Reviews code quality, security, best practices
 - **researcher**: Investigates APIs, docs, finds solutions
 - **debugger**: Fixes bugs, investigates issues
@@ -145,7 +148,7 @@ Generate a complete list of tasks needed to build this project.
 - Specific files to create
 - Patterns to follow
 - Requirements to meet",
-            "worker_role": "coder|tester|reviewer|researcher|debugger|designer",
+            "worker_role": "coder|tester|reviewer|researcher|debugger|designer|browser-headless",
             "priority": 1-10,
             "depends_on": ["title of task this depends on"],
             "expected_artifacts": ["file/path/to/create.py", "another/file.tsx"],
@@ -165,11 +168,36 @@ Generate a complete list of tasks needed to build this project.
 7. For APIs with databases: ALWAYS use SQLAlchemy with database sessions, NEVER in-memory dicts
 8. Include tasks for documentation, testing, and code review
 
+## WORKER ROLE SELECTION:
+- **coder**: Implementation tasks, writing code, fixing bugs
+- **tester**: Writing test files (unit tests, test setup), NOT running browsers manually
+- **reviewer**: Code review, quality checks (read-only, cannot edit code)
+- **researcher**: Looking up documentation, API research
+- **debugger**: Investigating and fixing issues
+- **designer**: Design systems, CSS, branding, UI/UX decisions
+- **browser-headless**: Headless browser tasks - fast automated testing, screenshots, Playwright automation. No visual display.
+- **browser-chrome**: Full Chrome browser with VNC access - use for tasks requiring visual debugging, complex interactions, or when you need to SEE the browser. Access via VNC at localhost:5920 or noVNC at localhost:6280.
+
+## MANDATORY FOR WEB PROJECTS (React, Vue, Next.js, any frontend):
+9. ALWAYS include a "Setup Playwright for E2E testing" task (worker_role: tester) that:
+   - Installs @playwright/test
+   - Creates playwright.config.ts at project root (with webServer config to auto-start dev server)
+   - Configures baseURL, browsers, screenshots
+10. ALWAYS include a "Write E2E tests with Playwright" task (worker_role: tester) that:
+    - Tests all main user flows via Playwright framework (NOT manual browser)
+    - Tests are run automatically via `npm test:e2e` or `pnpm test:e2e`
+11. ALWAYS include a "Run browser verification" task (worker_role: browser-headless) that:
+    - Opens the app in a browser using Playwright MCP
+    - Takes screenshots of all pages/features
+    - Verifies interactive elements work
+    - This task requires BROWSER-HEADLESS worker, not tester
+
 ## EXAMPLE ANTI-PATTERNS (AVOID):
 - "Implement the feature" (too vague)
 - "Do the backend" (not specific)
 - Tasks without expected artifacts
 - Circular dependencies
+- Web projects without Playwright E2E tests
 
 Respond ONLY with the JSON output, no other text.
 """
@@ -193,6 +221,21 @@ Respond ONLY with the JSON output, no other text.
         # Session tracking for Claude Code continuity
         # Maps objective_hash -> session_id for continuing related tasks
         self._session_cache = {}
+
+        # Auth error tracking
+        self._last_auth_error: Optional[str] = None
+
+    def has_auth_error(self) -> bool:
+        """Check if there's a pending auth error."""
+        return self._last_auth_error is not None
+
+    def get_auth_error(self) -> Optional[str]:
+        """Get the last auth error message."""
+        return self._last_auth_error
+
+    def clear_auth_error(self) -> None:
+        """Clear the auth error state."""
+        self._last_auth_error = None
 
     async def analyze_objective(
         self,
@@ -460,17 +503,36 @@ Respond ONLY with the JSON output, no other text.
                     session_mode = "continue"
                     logger.debug(f"Continuing session for objective: {objective_key}")
 
-            # Use the verification task dispatch which doesn't go through memory
-            result = await self.worker_pool.dispatch_verification_task(
-                task_type,
-                {
-                    "prompt": prompt,
-                    "expect_json": True
-                },
-                timeout_seconds=120,  # AI planning needs more time
-                session_mode=session_mode,
-                resume_session=resume_session
-            )
+            # Retry loop for worker_busy errors
+            max_retries = 3
+            retry_delay = 30  # seconds
+            result = None
+
+            for attempt in range(max_retries):
+                # Use the verification task dispatch which doesn't go through memory
+                result = await self.worker_pool.dispatch_verification_task(
+                    task_type,
+                    {
+                        "prompt": prompt,
+                        "expect_json": True
+                    },
+                    timeout_seconds=300,  # AI planning needs more time (5 minutes)
+                    session_mode=session_mode,
+                    resume_session=resume_session
+                )
+
+                # Check for retryable errors
+                if isinstance(result, dict) and result.get("error") == "worker_busy" and result.get("retryable"):
+                    if attempt < max_retries - 1:
+                        logger.warning(f"Verificator busy, retrying in {retry_delay}s (attempt {attempt + 1}/{max_retries})")
+                        await asyncio.sleep(retry_delay)
+                        continue
+                    else:
+                        logger.error(f"Verificator still busy after {max_retries} attempts")
+                        return None
+
+                # Got a result (success or non-retryable error), break the loop
+                break
 
             if result:
                 logger.debug(f"AI task result type: {type(result)}, keys: {result.keys() if isinstance(result, dict) else 'N/A'}")
@@ -483,6 +545,15 @@ Respond ONLY with the JSON output, no other text.
 
                 # Extract the actual result
                 if isinstance(result, dict):
+                    # Check for auth errors first
+                    if is_auth_error(result):
+                        error_msg = result.get("message", "") or result.get("error", "OAuth token expired")
+                        logger.error(f"AUTHENTICATION ERROR in AI planner: {error_msg}")
+                        logger.error("AI planning cannot proceed until authentication is restored")
+                        # Store auth error state for orchestrator to detect
+                        self._last_auth_error = str(error_msg)
+                        return None
+
                     if "result" in result:
                         logger.debug(f"Returning result field (length: {len(str(result['result']))})")
                         return result["result"]
@@ -535,7 +606,7 @@ Respond ONLY with the JSON output, no other text.
                 continue
 
             # Validate worker role
-            valid_roles = {"coder", "tester", "reviewer", "researcher", "debugger", "designer"}
+            valid_roles = {"coder", "tester", "reviewer", "researcher", "debugger", "designer", "browser-headless", "browser-chrome"}
             role = task.get("worker_role", "coder").lower()
             if role not in valid_roles:
                 role = "coder"
@@ -586,8 +657,15 @@ Respond ONLY with the JSON output, no other text.
     def _fallback_analysis(self, objective: str, objective_id: Optional[str] = None) -> Dict[str, Any]:
         """Fallback when AI analysis fails."""
         logger.warning("Using fallback analysis")
-        # Use same naming pattern as main.py for consistency
-        project_name = f"project-{objective_id[:8]}" if objective_id else "project"
+        # Use objective ID if available, otherwise generate from objective hash
+        # This ensures we don't return generic "project" which gets rejected by main.py
+        if objective_id:
+            project_name = f"project-{objective_id[:8]}"
+        else:
+            # Generate deterministic name from objective content
+            import hashlib
+            obj_hash = hashlib.md5(objective.encode()).hexdigest()[:8]
+            project_name = f"project-{obj_hash}"
         return {
             "analysis": {
                 "summary": objective[:200],

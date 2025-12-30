@@ -68,7 +68,26 @@ sleep 1
 
 echo "[Chrome Worker $WORKER_ID] VNC ready at :5900, noVNC ready at :6080"
 
-# Update status to idle after VNC is ready
+# =============================================================================
+# Start Chrome Browser
+# =============================================================================
+echo "[Chrome Worker $WORKER_ID] Starting Chrome browser..."
+
+# Clean up stale Chrome profile locks from previous containers
+rm -f /home/ubuntu/.config/google-chrome/SingletonLock 2>/dev/null || true
+rm -f /home/ubuntu/.config/google-chrome/SingletonSocket 2>/dev/null || true
+rm -f /home/ubuntu/.config/google-chrome/SingletonCookie 2>/dev/null || true
+
+google-chrome --no-sandbox --disable-gpu --start-maximized \
+    --disable-dev-shm-usage \
+    --disable-background-networking \
+    --no-first-run \
+    --disable-sync \
+    "about:blank" &
+sleep 2
+echo "[Chrome Worker $WORKER_ID] Chrome started"
+
+# Update status to idle after Chrome is ready
 update_status "idle" ""
 
 # =============================================================================

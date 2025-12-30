@@ -23,6 +23,40 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("clopus.verificator_client")
 
+# Auth error patterns to detect OAuth token expiration
+AUTH_ERROR_PATTERNS = [
+    "authentication_error",
+    "oauth token has expired",
+    "token has expired",
+    "please obtain a new token",
+    "refresh your existing token",
+    "not authenticated",
+    "authentication required",
+]
+
+
+def is_auth_error(result: Optional[Dict]) -> bool:
+    """Check if a result indicates an authentication error."""
+    if not result:
+        return False
+
+    # Check for explicit error type
+    error_type = result.get("type", "")
+    if error_type == "authentication_error":
+        return True
+
+    # Check result text for auth error patterns
+    result_text = str(result.get("result", ""))
+    error_text = str(result.get("error", ""))
+    message_text = str(result.get("message", ""))
+    combined = (result_text + error_text + message_text).lower()
+
+    for pattern in AUTH_ERROR_PATTERNS:
+        if pattern in combined:
+            return True
+
+    return False
+
 
 @dataclass
 class CacheEntry:
@@ -143,6 +177,13 @@ class VerificatorClient:
         # AI-First Engine (NEW in v3.2)
         self.ai_engine: Optional["AIFirstEngine"] = None
 
+        # =================================================================
+        # AUTH ERROR TRACKING (NEW)
+        # =================================================================
+        # Track auth errors so orchestrator can pause operations
+        self._last_auth_error: Optional[str] = None
+        self._auth_error_count: int = 0
+
         # Caching layer (NEW in v3.2)
         self.cache_enabled = cache_enabled
         self._cache = VerificatorCache(
@@ -159,6 +200,30 @@ class VerificatorClient:
         """
         self.ai_engine = ai_engine
         logger.info("AI-First Engine connected to verificator client")
+
+    # =========================================================================
+    # AUTH ERROR HANDLING
+    # =========================================================================
+
+    def _handle_auth_error(self, result: Dict) -> None:
+        """Record an authentication error from a result."""
+        error_msg = result.get("message", "") or result.get("error", "OAuth token expired")
+        self._last_auth_error = str(error_msg)
+        self._auth_error_count += 1
+        logger.error(f"AUTHENTICATION ERROR in verificator: {error_msg}")
+
+    def has_auth_error(self) -> bool:
+        """Check if there's a pending auth error."""
+        return self._last_auth_error is not None
+
+    def get_auth_error(self) -> Optional[str]:
+        """Get the last auth error message."""
+        return self._last_auth_error
+
+    def clear_auth_error(self) -> None:
+        """Clear the auth error state (after user re-authenticates)."""
+        self._last_auth_error = None
+        logger.info("Auth error state cleared")
 
     async def specify_artifacts(
         self,
@@ -186,8 +251,9 @@ class VerificatorClient:
                 return cached
 
         if not self.worker_pool.is_verificator_available():
-            logger.debug("Verificator not available, using regex fallback")
-            artifacts = self._fallback_infer_artifacts(task_title, task_description)
+            logger.debug("Verificator not available, using AI-first fallback")
+            # Use async AI-first fallback directly (not the sync wrapper)
+            artifacts = await self._fallback_infer_artifacts_async(task_title, task_description)
             if self._cache:
                 self._cache.set(cache_key, artifacts, ttl=600)  # 10 min for fallback
             return artifacts
@@ -201,8 +267,12 @@ class VerificatorClient:
             }
         )
 
-        # Check for error responses (timeout, worker_busy, etc.)
-        if result and "error" in result:
+        # Check for error responses (timeout, worker_busy, auth errors, etc.)
+        if result and is_auth_error(result):
+            # AUTH ERROR: Record it and use fallback
+            self._handle_auth_error(result)
+            logger.error("Auth error in specify_artifacts - using fallback")
+        elif result and "error" in result:
             logger.warning(f"Verificator error: {result.get('message', result['error'])}")
             if result.get("retryable"):
                 logger.debug(f"Error is retryable, using fallback for now")
@@ -214,8 +284,9 @@ class VerificatorClient:
                 self._cache.set(cache_key, artifacts)
             return artifacts
 
-        logger.warning("Verificator failed to specify artifacts, using regex fallback")
-        artifacts = self._fallback_infer_artifacts(task_title, task_description)
+        logger.warning("Verificator failed to specify artifacts, using AI-first fallback")
+        # Use async AI-first fallback directly (not the sync wrapper)
+        artifacts = await self._fallback_infer_artifacts_async(task_title, task_description)
         if self._cache:
             self._cache.set(cache_key, artifacts, ttl=600)  # 10 min for fallback
         return artifacts
@@ -259,8 +330,12 @@ class VerificatorClient:
             }
         )
 
-        # Check for error responses (timeout, worker_busy, etc.)
-        if result and "error" in result:
+        # Check for error responses (timeout, worker_busy, auth errors, etc.)
+        if result and is_auth_error(result):
+            # AUTH ERROR: Record it and use fallback
+            self._handle_auth_error(result)
+            logger.error("Auth error in verify_completion - using file check fallback")
+        elif result and "error" in result:
             logger.warning(f"Verificator error: {result.get('message', result['error'])}")
         elif result and "verified" in result:
             verified = result.get("verified", False)
@@ -320,8 +395,12 @@ class VerificatorClient:
             }
         )
 
-        # Check for error responses (timeout, worker_busy, etc.)
-        if result and "error" in result:
+        # Check for error responses (timeout, worker_busy, auth errors, etc.)
+        if result and is_auth_error(result):
+            # AUTH ERROR: Record it and use fallback
+            self._handle_auth_error(result)
+            logger.error("Auth error in check_duplicate - using word overlap fallback")
+        elif result and "error" in result:
             logger.warning(f"Verificator error: {result.get('message', result['error'])}")
         elif result and "is_duplicate" in result:
             is_duplicate = result.get("is_duplicate", False)
@@ -386,8 +465,12 @@ class VerificatorClient:
             }
         )
 
-        # Check for error responses (timeout, worker_busy, etc.)
-        if result and "error" in result:
+        # Check for error responses (timeout, worker_busy, auth errors, etc.)
+        if result and is_auth_error(result):
+            # AUTH ERROR: Record it and use fallback
+            self._handle_auth_error(result)
+            logger.error("Auth error in match_project - using keyword matching fallback")
+        elif result and "error" in result:
             logger.warning(f"Verificator error: {result.get('message', result['error'])}")
         elif result and "project_path" in result:
             project_path = result.get("project_path")
@@ -436,8 +519,12 @@ class VerificatorClient:
             }
         )
 
-        # Check for error responses (timeout, worker_busy, etc.)
-        if result and "error" in result:
+        # Check for error responses (timeout, worker_busy, auth errors, etc.)
+        if result and is_auth_error(result):
+            # AUTH ERROR: Record it and use fallback
+            self._handle_auth_error(result)
+            logger.error("Auth error in audit_completed_task - using file check fallback")
+        elif result and "error" in result:
             logger.warning(f"Verificator error: {result.get('message', result['error'])}")
         elif result and "passed" in result:
             passed = result.get("passed", False)
@@ -468,9 +555,15 @@ class VerificatorClient:
 
         Returns:
             Tuple of (matches: bool, coverage: float, gaps: List[str])
+            NOTE: When verification fails due to auth error, returns:
+            (False, 0.0, ["VERIFICATION_UNAVAILABLE: Auth error"])
         """
         if not self.worker_pool.is_verificator_available():
-            # No good fallback for semantic checking
+            # Check if we have a pending auth error
+            if self._last_auth_error:
+                logger.warning(f"Semantic check skipped due to auth error: {self._last_auth_error}")
+                return False, 0.0, ["VERIFICATION_UNAVAILABLE: Authentication expired"]
+            # No good fallback for semantic checking, but no auth error
             logger.debug("Verificator not available, assuming success for semantic check")
             return True, 1.0, []
 
@@ -484,8 +577,13 @@ class VerificatorClient:
             }
         )
 
-        # Check for error responses (timeout, worker_busy, etc.)
-        if result and "error" in result:
+        # Check for error responses (timeout, worker_busy, auth errors, etc.)
+        if result and is_auth_error(result):
+            # AUTH ERROR: Record it and return failure indicator
+            self._handle_auth_error(result)
+            logger.error("Auth error in semantic_check - CANNOT verify task completion")
+            return False, 0.0, ["VERIFICATION_UNAVAILABLE: Authentication expired - please re-login"]
+        elif result and "error" in result:
             logger.warning(f"Verificator error: {result.get('message', result['error'])}")
         elif result and "matches" in result:
             matches = result.get("matches", True)
@@ -493,7 +591,9 @@ class VerificatorClient:
             gaps = result.get("gaps", [])
             return matches, coverage, gaps
 
-        # No good fallback, assume success
+        # No good fallback - but distinguish from auth errors
+        if self._last_auth_error:
+            return False, 0.0, ["VERIFICATION_UNAVAILABLE: Authentication expired"]
         return True, 1.0, []
 
     # =========================================================================

@@ -2,7 +2,7 @@
 
 > Category: task-failures
 > Severity: medium
-> Created: 2025-12-28T16:33:48.860007
+> Created: 2025-12-29T02:42:44.956833
 > Source: Run validation: integration_tests
 
 ## What Happened
@@ -14,7 +14,7 @@ Task:
 
 The validation stage 'integration_tests' has not passed for this project.
 
-Project Path: /workspace/todo-app
+Project Path: /workspace/project-11ee8aae
 
 Please ensure this validation stage passes:
 - integration_tests

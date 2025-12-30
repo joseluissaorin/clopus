@@ -3,44 +3,25 @@
   "model": "opus",
   "permissions": {
     "allow": [
-      "Bash(git:*)",
-      "Bash(npm:*)",
-      "Bash(npx:*)",
-      "Bash(python:*)",
-      "Bash(pytest:*)",
-      "Bash(pip:*)",
-      "Bash(playwright:*)",
-      "Bash(curl:*)",
-      "Bash(ls:*)",
-      "Bash(cat:*)",
-      "Bash(mkdir:*)",
-      "Bash(cp:*)",
-      "Bash(mv:*)",
-      "Bash(head:*)",
-      "Bash(tail:*)",
-      "Bash(grep:*)",
-      "Bash(find:*)",
+      "Bash(*)",
       "Read(**/*)",
-      "Edit(**/*.test.*)",
-      "Edit(**/*.spec.*)",
-      "Edit(**/__tests__/**/*)",
-      "Edit(**/tests/**/*)",
-      "Write(**/*.test.*)",
-      "Write(**/*.spec.*)",
+      "Edit(**/*)",
+      "Write(**/*)",
       "Glob(**/*)",
       "Grep(**/*)"
     ],
     "deny": [
-      "Bash(rm -rf:*)",
+      "Bash(rm -rf /)",
+      "Bash(rm -rf /*)",
       "Bash(sudo:*)",
-      "Edit(**/src/**/*.ts)",
-      "Edit(**/src/**/*.tsx)",
-      "Edit(**/app/**/*.py)"
+      "Bash(shutdown:*)",
+      "Bash(reboot:*)"
     ],
     "additionalDirectories": [
       "/workspace",
       "/app/ipc",
-      "/output/screenshots"
+      "/output/screenshots",
+      "/tmp"
     ],
     "defaultMode": "acceptEdits"
   },

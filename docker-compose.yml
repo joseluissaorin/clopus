@@ -23,6 +23,7 @@ x-worker-common: &worker-common
     - ./skills:/app/skills:ro
     - ./workers/system-prompts:/app/system-prompts:ro
     - ./workers/hooks:/app/hooks:ro
+    - ./workers/worker-entrypoint.sh:/app/worker-entrypoint.sh:ro
     - mcp-servers:/app/mcp-servers:ro
     - ./workers/.mcp.json:/workspace/.mcp.json:ro
     # NEW: Mount Claude Code configuration (hooks, agents, skills, settings)

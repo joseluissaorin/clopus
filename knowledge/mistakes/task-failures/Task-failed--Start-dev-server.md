@@ -2,28 +2,28 @@
 
 > Category: task-failures
 > Severity: medium
-> Created: 2025-12-28T22:06:55.939181
+> Created: 2025-12-30T00:08:29.875477
 > Source: Start dev server
 
 ## What Happened
 
 Error: Unknown error
 
-Task: Start the dev server for project.
+Task: Start the dev server for todo-app.
 
 ## Actions Required
-1. Navigate to project: /workspace/project
-2. Start dev server on port 3198
+1. Navigate to project: /workspace/todo-app
+2. Start dev server on port 3125
 3. Verify server is accessible
 
 ## Commands
 ```bash
-cd /workspace/project
-npm run dev -- --host 0.0.0.0 --port 3198
+cd /workspace/todo-app
+npm run dev -- --host 0.0.0.0 --port 3125
 ```
 
 ## Expected Result
-Server running at http://0.0.0.0:3198
+Server running at http://0.0.0.0:3125
 
 This is a resumption task - the project was previously in progress.
 

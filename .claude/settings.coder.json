@@ -3,31 +3,7 @@
   "model": "opus",
   "permissions": {
     "allow": [
-      "Bash(git:*)",
-      "Bash(npm:*)",
-      "Bash(npx:*)",
-      "Bash(python:*)",
-      "Bash(pip:*)",
-      "Bash(cargo:*)",
-      "Bash(go:*)",
-      "Bash(docker:*)",
-      "Bash(curl:*)",
-      "Bash(wget:*)",
-      "Bash(ls:*)",
-      "Bash(cat:*)",
-      "Bash(mkdir:*)",
-      "Bash(cp:*)",
-      "Bash(mv:*)",
-      "Bash(head:*)",
-      "Bash(tail:*)",
-      "Bash(grep:*)",
-      "Bash(find:*)",
-      "Bash(wc:*)",
-      "Bash(echo:*)",
-      "Bash(touch:*)",
-      "Bash(chmod:*)",
-      "Bash(tar:*)",
-      "Bash(unzip:*)",
+      "Bash(*)",
       "Read(**/*)",
       "Edit(**/*)",
       "Write(**/*)",
@@ -35,16 +11,16 @@
       "Grep(**/*)"
     ],
     "deny": [
-      "Bash(rm -rf:*)",
+      "Bash(rm -rf /)",
+      "Bash(rm -rf /*)",
       "Bash(sudo:*)",
       "Bash(shutdown:*)",
-      "Read(.env.production)",
-      "Edit(package-lock.json)",
-      "Edit(yarn.lock)"
+      "Bash(reboot:*)"
     ],
     "additionalDirectories": [
       "/workspace",
-      "/app/ipc"
+      "/app/ipc",
+      "/tmp"
     ],
     "defaultMode": "acceptEdits"
   },

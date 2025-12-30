@@ -1,9 +1,9 @@
-# Mistake: Task failed: Fix validation failures: Run E2E tests for nexus-api
+# Mistake: Task failed: Fix validation failures: Run E2E tests for project-11ee8aae
 
 > Category: task-failures
 > Severity: medium
-> Created: 2025-12-27T20:23:43.852539
-> Source: Fix validation failures: Run E2E tests for nexus-api
+> Created: 2025-12-29T02:47:51.936458
+> Source: Fix validation failures: Run E2E tests for project-11ee8aae
 
 ## What Happened
 
@@ -12,22 +12,21 @@ Error: Unknown error
 Task: 
 VALIDATION FAILURE - Fix Required
 
-Original Task: Run E2E tests for nexus-api
-Original Task ID: b86807e8-c16a-4618-91de-e201f196158a
-Failed Validation Stages: build
+Original Task: Run E2E tests for project-11ee8aae
+Original Task ID: 495bbaf4-50e2-4031-905a-6609ae013bd7
+Failed Validation Stages: review
 Error Summary: ✗ Validation FAILED
 
-  ✓ syntax: passed (89326ms)
-  ✓ lint: passed (23ms)
-  ✗ build: FAILED
-      - error: externally-managed-environment
-
-Please:
-1. Analyze the validation errors
-2. Fix the code to pass all validation stages
-3. Validation will automatically re-run after this fix task completes
-
-Failed stages need to 
+  ✓ syntax: passed (295ms)
+  ✓ lint: passed (1745ms)
+  ✓ build: passed (1725ms)
+  ✓ unit_tests: passed (2932ms)
+  ○ integration_tests: skipped
+  ○ e2e_tests: skipped
+  ✓ security: passed (802ms)
+      ⚠ 2 warning(s)
+  ✗ review: FAILED
+      - API Error: 401 {"type":"error","error":{"type":
 
 ## How to Avoid
 

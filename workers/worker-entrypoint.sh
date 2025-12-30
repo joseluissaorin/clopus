@@ -51,6 +51,24 @@ else
     mkdir -p "$CLAUDE_HOME/projects"
 fi
 
+# Ensure workspace directory and subdirectories have correct permissions
+# This fixes the recurring permission issues with root-owned files in /workspace
+if [ -d "/workspace" ]; then
+    # Try to fix permissions on .clopus and .shared directories
+    for dir in "/workspace/.clopus" "/workspace/.shared"; do
+        if [ -d "$dir" ] && [ ! -w "$dir" ]; then
+            echo "[Worker $WORKER_ID] Fixing workspace subdirectory permissions: $dir"
+            # Try to take ownership if we have sudo (we won't, but try anyway)
+            sudo chown -R ubuntu:ubuntu "$dir" 2>/dev/null || true
+        fi
+    done
+
+    # Ensure we can write to workspace
+    if [ ! -w "/workspace" ]; then
+        echo "[Worker $WORKER_ID] Warning: /workspace is not writable"
+    fi
+fi
+
 # Set up worker-specific configuration from mounted config
 setup_claude_config() {
     local role=$1
@@ -90,19 +108,104 @@ setup_claude_config() {
 }
 
 # =============================================================================
-# Authentication Setup
+# Authentication Setup with Auto-Sync
 # =============================================================================
 
-# Check if .claude directory is mounted (preferred for OAuth)
-if [ -d "/home/ubuntu/.claude-host" ] && [ -f "/home/ubuntu/.claude-host/.credentials.json" ]; then
-    echo "[Worker $WORKER_ID] Using mounted OAuth credentials..."
-    cp /home/ubuntu/.claude-host/.credentials.json "$CLAUDE_HOME/" 2>/dev/null || true
-    [ -f /home/ubuntu/.claude-host/settings.json ] && cp /home/ubuntu/.claude-host/settings.json "$CLAUDE_HOME/settings.json.base" 2>/dev/null || true
-    chmod 600 "$CLAUDE_HOME/.credentials.json" 2>/dev/null || true
+HOST_CREDS="/home/ubuntu/.claude-host/.credentials.json"
+LOCAL_CREDS="$CLAUDE_HOME/.credentials.json"
+CREDS_STATUS_FILE="$IPC_PATH/tasks/$WORKER_ID/credentials_status.json"
+
+# Function to get token expiration time in hours
+get_token_expiry_hours() {
+    local creds_file=$1
+    if [ -f "$creds_file" ]; then
+        python3 -c "
+import json, sys, time
+try:
+    with open('$creds_file') as f:
+        d = json.load(f)
+    expires_at = d.get('claudeAiOauth', {}).get('expiresAt', 0)
+    if expires_at > 0:
+        hours_left = (expires_at/1000 - time.time()) / 3600
+        print(f'{hours_left:.2f}')
+    else:
+        print('-999')
+except:
+    print('-999')
+" 2>/dev/null || echo "-999"
+    else
+        echo "-999"
+    fi
+}
+
+# Function to sync credentials from host if needed
+sync_credentials_from_host() {
+    local force=${1:-false}
+
+    if [ ! -f "$HOST_CREDS" ]; then
+        echo "[Worker $WORKER_ID] No host credentials available at $HOST_CREDS"
+        return 1
+    fi
+
+    local host_expiry=$(get_token_expiry_hours "$HOST_CREDS")
+    local local_expiry=$(get_token_expiry_hours "$LOCAL_CREDS")
+
+    # Sync if:
+    # 1. Force flag is set
+    # 2. Local credentials don't exist
+    # 3. Local token is expired or expiring soon (< 1 hour)
+    # 4. Host token is newer (more hours remaining)
+
+    local should_sync=false
+    local reason=""
+
+    if [ "$force" = "true" ]; then
+        should_sync=true
+        reason="forced sync"
+    elif [ ! -f "$LOCAL_CREDS" ]; then
+        should_sync=true
+        reason="no local credentials"
+    elif [ "$(echo "$local_expiry < 1" | bc -l 2>/dev/null || echo 0)" = "1" ]; then
+        should_sync=true
+        reason="local token expired or expiring soon (${local_expiry}h remaining)"
+    elif [ "$(echo "$host_expiry > $local_expiry + 0.5" | bc -l 2>/dev/null || echo 0)" = "1" ]; then
+        should_sync=true
+        reason="host token is fresher (host: ${host_expiry}h, local: ${local_expiry}h)"
+    fi
+
+    if [ "$should_sync" = "true" ]; then
+        echo "[Worker $WORKER_ID] Syncing credentials from host: $reason"
+        cp "$HOST_CREDS" "$LOCAL_CREDS" 2>/dev/null || true
+        chmod 600 "$LOCAL_CREDS" 2>/dev/null || true
+        local_expiry=$(get_token_expiry_hours "$LOCAL_CREDS")
+        echo "[Worker $WORKER_ID] Token synced, expires in ${local_expiry} hours"
+    fi
+
+    # Write credentials status for orchestrator monitoring
+    mkdir -p "$(dirname "$CREDS_STATUS_FILE")"
+    python3 -c "
+import json, time
+status = {
+    'worker_id': $WORKER_ID,
+    'token_expires_hours': $local_expiry,
+    'last_sync': time.strftime('%Y-%m-%dT%H:%M:%S'),
+    'synced_from_host': '$should_sync' == 'true'
+}
+with open('$CREDS_STATUS_FILE', 'w') as f:
+    json.dump(status, f)
+" 2>/dev/null || true
+
+    return 0
+}
+
+# Initial credential sync
+if [ -d "/home/ubuntu/.claude-host" ] && [ -f "$HOST_CREDS" ]; then
+    echo "[Worker $WORKER_ID] Host credentials mounted, syncing..."
+    sync_credentials_from_host true
 elif [ -n "$CLAUDE_OAUTH_TOKEN" ]; then
     echo "[Worker $WORKER_ID] Using OAuth token from environment..."
     mkdir -p "$CLAUDE_HOME"
-    cat > "$CLAUDE_HOME/.credentials.json" << CREDS
+    cat > "$LOCAL_CREDS" << CREDS
 {
   "claudeAiOauth": {
     "accessToken": "$CLAUDE_OAUTH_TOKEN",
@@ -110,7 +213,7 @@ elif [ -n "$CLAUDE_OAUTH_TOKEN" ]; then
   }
 }
 CREDS
-    chmod 600 "$CLAUDE_HOME/.credentials.json"
+    chmod 600 "$LOCAL_CREDS"
 elif [ -n "$ANTHROPIC_API_KEY" ]; then
     echo "[Worker $WORKER_ID] Using API key..."
     export ANTHROPIC_API_KEY
@@ -266,7 +369,9 @@ echo "{\"status\": \"idle\", \"role\": \"$WORKER_ROLE\", \"model\": \"$CLAUDE_MO
 # =============================================================================
 
 HEARTBEAT_INTERVAL=5
+CREDS_CHECK_INTERVAL=300  # Check credentials every 5 minutes
 LAST_HEARTBEAT=0
+LAST_CREDS_CHECK=0
 
 while true; do
     PENDING_FILE="$IPC_PATH/tasks/$WORKER_ID/pending.json"
@@ -276,6 +381,12 @@ while true; do
     if [ $((CURRENT_TIME - LAST_HEARTBEAT)) -ge $HEARTBEAT_INTERVAL ]; then
         echo "{\"status\": \"idle\", \"role\": \"$WORKER_ROLE\", \"model\": \"$CLAUDE_MODEL\", \"updated_at\": \"$(date -Iseconds)\", \"started_at\": \"$STARTED_AT\", \"session_enabled\": true}" > "$IPC_PATH/tasks/$WORKER_ID/status.json"
         LAST_HEARTBEAT=$CURRENT_TIME
+    fi
+
+    # Periodic credential sync check (every 5 minutes)
+    if [ $((CURRENT_TIME - LAST_CREDS_CHECK)) -ge $CREDS_CHECK_INTERVAL ]; then
+        sync_credentials_from_host false
+        LAST_CREDS_CHECK=$CURRENT_TIME
     fi
 
     if [ -f "$PENDING_FILE" ]; then
@@ -378,9 +489,16 @@ $TASK_PROMPT"
         fi
 
         # Execute Claude Code - capture both output and exit code
-        # Use || true to prevent set -e from exiting on non-zero exit code
-        RAW_OUTPUT=$(claude "${CLAUDE_ARGS[@]}" "$FULL_PROMPT" 2>&1) || true
-        CLAUDE_EXIT_CODE=${PIPESTATUS[0]:-$?}
+        # Use timeout to prevent tasks from running indefinitely (default: 30 minutes)
+        TASK_TIMEOUT=${TASK_TIMEOUT:-1800}
+        RAW_OUTPUT=$(timeout $TASK_TIMEOUT claude "${CLAUDE_ARGS[@]}" "$FULL_PROMPT" 2>&1) || true
+        CLAUDE_EXIT_CODE=$?
+
+        # Check if timeout occurred (exit code 124)
+        if [ $CLAUDE_EXIT_CODE -eq 124 ]; then
+            echo "[Worker $WORKER_ID] WARNING: Task timed out after ${TASK_TIMEOUT}s"
+            RAW_OUTPUT='{"error": "timeout", "message": "Task execution timed out after '"$TASK_TIMEOUT"' seconds"}'
+        fi
 
         # Only replace with error if output is empty AND looks like an error occurred
         if [ -z "$RAW_OUTPUT" ]; then
@@ -399,6 +517,11 @@ $TASK_PROMPT"
             save_session_id "$TASK_CWD" "$SESSION_ID"
             # Also save to task-specific IPC
             echo "{\"session_id\": \"$SESSION_ID\", \"worker_id\": \"$WORKER_ID\", \"project\": \"$TASK_CWD\"}" > "$WORKER_SESSION_FILE"
+        else
+            # Log warning when no session ID - helps debug stuck/failed tasks
+            echo "[Worker $WORKER_ID] WARNING: No session ID returned for task $TASK_ID"
+            # Log first 500 chars of output for debugging
+            echo "[Worker $WORKER_ID] Raw output (first 500 chars): $(echo "$RAW_OUTPUT" | head -c 500)"
         fi
 
         # Stop background heartbeat

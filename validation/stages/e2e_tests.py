@@ -140,32 +140,53 @@ class E2ETestValidator(BaseValidator):
             errors=self.parse_errors(output)
         )
 
-    def is_applicable(self, path: Path, project_type: str) -> bool:
-        """Check if E2E tests are applicable."""
-        # Web projects only
-        if project_type not in ("react", "nextjs", "vue", "nodejs"):
-            return False
+    # Web project types that should have E2E tests
+    WEB_PROJECT_TYPES = {
+        "react", "nextjs", "vue", "angular", "svelte", "solid",
+        "web", "frontend", "dashboard", "spa", "pwa", "nodejs",
+        "todo", "app", "webapp", "website", "landing",
+        "admin", "portal", "ui", "interface", "vite"
+    }
 
-        # Check for E2E config files
+    def is_applicable(self, path: Path, project_type: str) -> bool:
+        """Check if E2E tests are applicable - ANY web project with config."""
+        # Check for E2E config files first (if config exists, run tests)
         e2e_indicators = [
             "playwright.config.ts",
             "playwright.config.js",
+            "playwright.config.mjs",
             "cypress.config.js",
             "cypress.config.ts",
-            "e2e"
+            "e2e",
+            "tests"
         ]
 
         for indicator in e2e_indicators:
             if (path / indicator).exists():
                 return True
 
-        # Check for e2e script
+        # Check for e2e script in package.json
         if (path / "package.json").exists():
             try:
                 pkg = json.loads((path / "package.json").read_text())
                 scripts = pkg.get("scripts", {})
-                return any("e2e" in k.lower() for k in scripts.keys())
+                if any("e2e" in k.lower() or "playwright" in k.lower() for k in scripts.keys()):
+                    return True
             except:
                 pass
+
+        # Check project type - be inclusive for web projects
+        project_type_lower = (project_type or "").lower()
+        for web_type in self.WEB_PROJECT_TYPES:
+            if web_type in project_type_lower:
+                # For web projects, check if there's any test infrastructure
+                if (path / "package.json").exists():
+                    try:
+                        pkg = json.loads((path / "package.json").read_text())
+                        deps = {**pkg.get("dependencies", {}), **pkg.get("devDependencies", {})}
+                        if "@playwright/test" in deps or "cypress" in deps:
+                            return True
+                    except:
+                        pass
 
         return False
