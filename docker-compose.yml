@@ -199,13 +199,17 @@ services:
       HEARTBEAT_WORKER: "true"
       ANALYSIS_TIMEOUT: 120
 
-  # Dedicated Verificator Worker (Intelligent Verification)
-  # This worker uses Claude's intelligence to:
+  # Dedicated Verificator Workers (Intelligent Verification)
+  # These workers use Claude's intelligence to:
   # - Specify expected artifacts for tasks
   # - Verify task completions semantically
   # - Detect duplicate tasks by meaning
   # - Match objectives to projects
   # - Audit completed tasks for missing artifacts
+  #
+  # NEW IN v3.4: Two verificator workers for parallel verification
+  # - worker-8: Primary verificator (handles SPECIFY_ARTIFACTS, VERIFY_COMPLETION)
+  # - worker-8b: Secondary verificator (handles CHECK_DUPLICATE, MATCH_PROJECT)
   worker-8:
     <<: *worker-common
     container_name: clopus-worker-8
@@ -216,6 +220,23 @@ services:
       IPC_PATH: /app/ipc
       # Verificator-specific settings
       VERIFICATOR_WORKER: "true"
+      VERIFICATOR_PRIMARY: "true"
+      VERIFICATION_TIMEOUT: 60
+
+  # Secondary Verificator Worker (NEW in v3.4)
+  # Handles CHECK_DUPLICATE and MATCH_PROJECT tasks
+  # This splits the verification load for better throughput
+  worker-8b:
+    <<: *worker-common
+    container_name: clopus-worker-8b
+    environment:
+      <<: *common-env
+      WORKER_ID: "8b"
+      WORKER_ROLE: verificator
+      IPC_PATH: /app/ipc
+      # Verificator-specific settings
+      VERIFICATOR_WORKER: "true"
+      VERIFICATOR_SECONDARY: "true"
       VERIFICATION_TIMEOUT: 60
 
   # Browser Worker - Headless Playwright

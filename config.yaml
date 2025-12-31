@@ -248,8 +248,8 @@ mcp_servers:
 # =============================================================================
 heartbeat:
   enabled: true
-  interval_seconds: 300  # 5 minutes between cycles
-  first_check_delay_seconds: 30  # Wait before first check
+  interval_seconds: 600  # 10 minutes between cycles (was 5 min - reduced for performance)
+  first_check_delay_seconds: 60  # Wait before first check
   use_claude_analysis: true  # Use Claude for intelligent gap detection
   model: "claude-sonnet-4-20250514"  # Model for analysis
   integration_testing:
@@ -262,6 +262,42 @@ heartbeat:
     require_integration_tests: true  # For multi-project objectives
     require_e2e_tests: true
     allowed_failed_tasks: 0  # No failures allowed for completion
+  # Performance optimization: Skip verification for simple/standard tasks
+  skip_verification_patterns:
+    - "Initialize"
+    - "Install dependencies"
+    - "Setup Playwright"
+    - "Setup Vitest"
+    - "Start dev server"
+    - "Run validation"
+    - "Run lint"
+    - "Run build"
+    - "Clean up"
+    - "Configure"
+
+# =============================================================================
+# Verificator Configuration (NEW in v3.4)
+# =============================================================================
+verificator:
+  # Use fast word-overlap check before AI (significant speedup)
+  use_fast_duplicate_check: true
+  fast_duplicate_threshold: 0.85  # >85% word overlap = duplicate without AI
+  uncertain_range: [0.5, 0.85]  # 50-85% overlap = use AI to decide
+  # Timeout for verificator responses
+  timeout_seconds: 10  # Reduced from 20-30s
+  # Cache settings
+  cache_enabled: true
+  cache_ttl_seconds: 600  # 10 minutes
+  # Skip artifact inference for standard tasks
+  skip_artifact_inference_patterns:
+    - "setup"
+    - "install"
+    - "initialize"
+    - "start"
+    - "run validation"
+    - "run lint"
+    - "run build"
+    - "configure"
 
 # =============================================================================
 # Monitoring

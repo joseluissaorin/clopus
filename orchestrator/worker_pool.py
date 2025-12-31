@@ -16,7 +16,7 @@ import asyncio
 import json
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional, TYPE_CHECKING
+from typing import Any, Dict, List, Optional, Union, TYPE_CHECKING
 import logging
 
 from .config import WorkerConfig
@@ -45,7 +45,7 @@ class WorkerPool:
         self.memory = memory_client
         self.config = config
         self.ipc_path = Path(ipc_path)
-        self.workers: Dict[int, Dict] = {}
+        self.workers: Dict[Union[int, str], Dict] = {}
         self._running = False
 
         # Skills engine for enhanced prompts (set by orchestrator)
@@ -113,6 +113,37 @@ class WorkerPool:
 
             logger.info(f"Registered worker {i} with role: {role}")
 
+        # =================================================================
+        # SECONDARY VERIFICATOR WORKER (NEW in v3.4)
+        # =================================================================
+        # Add secondary verificator with ID 108 (100+8 = secondary verificator)
+        # Uses "8b" as IPC directory name to match docker container name
+        secondary_verificator_id = 108
+        secondary_ipc_name = "8b"
+        worker_dir_8b = self.ipc_path / "tasks" / secondary_ipc_name
+        worker_dir_8b.mkdir(parents=True, exist_ok=True)
+
+        # Clear stale IPC files for 8b
+        for stale_file in ["pending.json", "result.json", "cancel", "ack.json", "result.collected"]:
+            stale_path = worker_dir_8b / stale_file
+            if stale_path.exists():
+                stale_path.unlink()
+                logger.info(f"Cleared stale {stale_file} for worker {secondary_ipc_name}")
+
+        # Register secondary verificator
+        await self.memory.register_worker(secondary_verificator_id, "verificator")
+        self.workers[secondary_verificator_id] = {
+            "id": secondary_verificator_id,
+            "role": "verificator",
+            "status": "idle",
+            "current_task": None,
+            "ipc_dir": worker_dir_8b,
+            "last_heartbeat": datetime.now(),
+            "is_secondary": True,
+            "ipc_name": secondary_ipc_name  # For routing IPC files
+        }
+        logger.info(f"Registered secondary verificator worker {secondary_verificator_id} (IPC: {secondary_ipc_name})")
+
         self._running = True
 
     async def shutdown(self) -> None:
@@ -128,7 +159,7 @@ class WorkerPool:
 
     async def dispatch_task(
         self,
-        worker_id: int,
+        worker_id: Union[int, str],
         task_id: str,
         title: str,
         description: Optional[str] = None,
@@ -240,7 +271,7 @@ class WorkerPool:
                 return worker_id
         return None
 
-    def get_worker_session(self, worker_id: int) -> Optional[str]:
+    def get_worker_session(self, worker_id: Union[int, str]) -> Optional[str]:
         """Get the last session ID for a worker.
 
         Useful for continuing sessions when dispatching follow-up tasks.
@@ -533,7 +564,7 @@ Always return results as JSON:
         self.skills_engine = skills_engine
         logger.info("Skills engine connected to worker pool")
 
-    async def collect_results(self) -> Dict[int, Dict]:
+    async def collect_results(self) -> Dict[Union[int, str], Dict]:
         """Collect completed task results from workers using atomic file operations.
 
         Uses atomic rename to prevent race conditions when reading result files.
@@ -637,7 +668,7 @@ Always return results as JSON:
         return stale_workers
 
 
-    async def get_worker_status(self, worker_id: int) -> Optional[Dict]:
+    async def get_worker_status(self, worker_id: Union[int, str]) -> Optional[Dict]:
         """Get status of a specific worker."""
         if worker_id not in self.workers:
             return None
@@ -744,7 +775,7 @@ Always return results as JSON:
                 statuses.append(status)
         return statuses
 
-    async def cancel_task(self, worker_id: int) -> bool:
+    async def cancel_task(self, worker_id: Union[int, str]) -> bool:
         """Cancel the current task for a worker."""
         if worker_id not in self.workers:
             return False
@@ -816,18 +847,76 @@ Always return results as JSON:
         return None
 
     def get_verificator_worker_id(self) -> Optional[int]:
-        """Get the dedicated verificator worker ID."""
+        """Get a dedicated verificator worker ID (for backwards compatibility)."""
+        worker_ids = self.get_verificator_worker_ids()
+        return worker_ids[0] if worker_ids else None
+
+    def get_verificator_worker_ids(self) -> List:
+        """
+        Get all verificator worker IDs.
+
+        NEW IN v3.4: Support for multiple verificators.
+        Returns list of worker IDs (can include strings like "8b").
+        """
+        verificators = []
         for worker_id, worker in self.workers.items():
             if worker["role"] == "verificator":
-                return worker_id
-        return None
+                verificators.append(worker_id)
+        return verificators
+
+    def get_best_verificator_for_task(self, task_type: str) -> Optional[Any]:
+        """
+        Get the best verificator worker for a task type.
+
+        NEW IN v3.4: Load balancing between verificators.
+
+        Task routing:
+        - Primary (8): SPECIFY_ARTIFACTS, VERIFY_COMPLETION, AUDIT_COMPLETED, SEMANTIC_CHECK
+        - Secondary (8b): CHECK_DUPLICATE, MATCH_PROJECT
+        - Round-robin: OBJECTIVE_ANALYSIS, TASK_GENERATION
+
+        Falls back to any idle verificator if preferred is busy.
+        """
+        verificator_ids = self.get_verificator_worker_ids()
+        if not verificator_ids:
+            return None
+
+        # Define preferred routing
+        secondary_tasks = {"CHECK_DUPLICATE", "MATCH_PROJECT"}
+        primary_tasks = {"SPECIFY_ARTIFACTS", "VERIFY_COMPLETION", "AUDIT_COMPLETED", "SEMANTIC_CHECK"}
+
+        # Find idle verificators
+        idle_verificators = [
+            vid for vid in verificator_ids
+            if self.workers[vid]["status"] == "idle"
+        ]
+
+        if not idle_verificators:
+            # All busy - return None (caller will wait)
+            return None
+
+        # Prefer routing to appropriate verificator
+        if task_type in secondary_tasks:
+            # Prefer secondary (8b) for duplicate/match tasks
+            for vid in idle_verificators:
+                if str(vid) == "8b" or (isinstance(vid, str) and "b" in vid):
+                    return vid
+        elif task_type in primary_tasks:
+            # Prefer primary (8) for artifact/verification tasks
+            for vid in idle_verificators:
+                if vid == 8 or str(vid) == "8":
+                    return vid
+
+        # Round-robin for other tasks or if preferred not available
+        # Just return first idle verificator
+        return idle_verificators[0]
 
     def is_verificator_available(self) -> bool:
-        """Check if the verificator worker is available (idle)."""
-        worker_id = self.get_verificator_worker_id()
-        if worker_id is None:
+        """Check if any verificator worker is available (idle)."""
+        verificator_ids = self.get_verificator_worker_ids()
+        if not verificator_ids:
             return False
-        return self.workers[worker_id]["status"] == "idle"
+        return any(self.workers[vid]["status"] == "idle" for vid in verificator_ids)
 
     async def dispatch_verification_task(
         self,
@@ -838,7 +927,9 @@ Always return results as JSON:
         resume_session: Optional[str] = None
     ) -> Optional[Dict[str, Any]]:
         """
-        Dispatch a verification task to the verificator worker and wait for result.
+        Dispatch a verification task to a verificator worker and wait for result.
+
+        NEW IN v3.4: Load-balanced across multiple verificators.
 
         Args:
             task_type: One of SPECIFY_ARTIFACTS, VERIFY_COMPLETION, CHECK_DUPLICATE,
@@ -854,10 +945,35 @@ Always return results as JSON:
         """
         import uuid
 
-        worker_id = self.get_verificator_worker_id()
+        # NEW IN v3.4: Use load-balanced verificator selection
+        worker_id = self.get_best_verificator_for_task(task_type)
+
+        # If no idle verificator, wait for one to become available
         if worker_id is None:
-            logger.error("No verificator worker found")
-            return None
+            verificator_ids = self.get_verificator_worker_ids()
+            if not verificator_ids:
+                logger.error("No verificator workers found")
+                return None
+
+            # Wait for any verificator to become idle
+            wait_start = datetime.now()
+            wait_timeout = min(timeout_seconds // 2, 60)  # Reduced wait timeout for faster failover
+
+            logger.debug(f"All verificators busy, waiting up to {wait_timeout}s...")
+
+            while worker_id is None:
+                await asyncio.sleep(0.5)
+                elapsed = (datetime.now() - wait_start).total_seconds()
+                if elapsed > wait_timeout:
+                    logger.warning(f"No verificator available within {wait_timeout}s timeout")
+                    return {
+                        "error": "worker_busy",
+                        "task_type": task_type,
+                        "timeout_seconds": timeout_seconds,
+                        "retryable": True,
+                        "message": f"All verificators were busy for {wait_timeout} seconds"
+                    }
+                worker_id = self.get_best_verificator_for_task(task_type)
 
         worker = self.workers[worker_id]
 
@@ -882,29 +998,29 @@ Always return results as JSON:
             # Fallback to in-memory status
             return worker["status"] == "idle"
 
-        # Wait for worker to become available (with timeout)
-        # Check BOTH in-memory and file-based status to avoid race conditions
-        # For AI planning tasks (long timeout), wait up to half the timeout for availability
+        # Final check that selected worker is actually idle
         wait_start = datetime.now()
-        wait_timeout = min(timeout_seconds // 2, 180)  # Up to 3 minutes wait for availability
-
-        logger.debug(f"Waiting up to {wait_timeout}s for verificator to become idle...")
+        wait_timeout = min(timeout_seconds // 4, 30)  # Short wait for selected worker
 
         while not is_worker_actually_idle():
             await asyncio.sleep(0.5)
             elapsed = (datetime.now() - wait_start).total_seconds()
             if elapsed > wait_timeout:
-                logger.warning(f"Verificator worker not available within {wait_timeout}s timeout")
+                # Try to find another verificator
+                other_id = self.get_best_verificator_for_task(task_type)
+                if other_id and other_id != worker_id:
+                    worker_id = other_id
+                    worker = self.workers[worker_id]
+                    logger.info(f"Switched to verificator {worker_id} for {task_type}")
+                    continue
+                logger.warning(f"Verificator {worker_id} not available within {wait_timeout}s timeout")
                 return {
                     "error": "worker_busy",
                     "task_type": task_type,
                     "timeout_seconds": timeout_seconds,
                     "retryable": True,
-                    "message": f"Verificator worker was busy for {wait_timeout} seconds"
+                    "message": f"Verificator worker {worker_id} was busy for {wait_timeout} seconds"
                 }
-            # Log progress every 30s
-            if int(elapsed) % 30 == 0 and int(elapsed) > 0:
-                logger.info(f"Still waiting for verificator... ({int(elapsed)}s elapsed)")
 
         # Sync in-memory status with file status
         worker["status"] = "idle"
